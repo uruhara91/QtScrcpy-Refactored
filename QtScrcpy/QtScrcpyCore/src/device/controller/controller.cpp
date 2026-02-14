@@ -15,6 +15,8 @@ Controller::Controller(std::function<qint64(const QByteArray&)> sendData, QStrin
     Q_ASSERT(m_receiver);
 
     updateScript(gameScript);
+    
+    m_inputThrottler.start();
 }
 
 Controller::~Controller() {}
@@ -202,6 +204,13 @@ void Controller::setDisplayPower(bool on)
 
 void Controller::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
 {
+    if (from->type() == QEvent::MouseMove) {
+        if (m_inputThrottler.elapsed() < 8) { 
+            return;
+        }
+        m_inputThrottler.restart();
+    }
+    
     if (m_inputConvert) {
         m_inputConvert->mouseEvent(from, frameSize, showSize);
     }

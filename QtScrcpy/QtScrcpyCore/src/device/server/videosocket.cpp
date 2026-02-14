@@ -20,11 +20,10 @@ qint32 VideoSocket::subThreadRecvData(quint8 *buf, qint32 bufSize)
 
     while (bytesAvailable() < bufSize) {
         if (m_quit) return -1;
-
         if (state() != QAbstractSocket::ConnectedState) return -1;
 
-        if (!waitForReadyRead(10)) {
-            continue; 
+        if (!waitForReadyRead(-1)) {
+            return -1; 
         }
     }
 

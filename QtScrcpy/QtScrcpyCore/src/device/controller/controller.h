@@ -4,13 +4,21 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QRect>
+#include <QSize>
+#include <QElapsedTimer>
 
+#include "adbprocess.h"
 #include "inputconvertbase.h"
+#include "devicemsg.h"
 
 class QTcpSocket;
 class Receiver;
 class InputConvertBase;
 class DeviceMsg;
+class ControlMsg;
+class VideoSocket;
+
 class Controller : public QObject
 {
     Q_OBJECT
@@ -66,6 +74,8 @@ private:
     QPointer<Receiver> m_receiver;
     QPointer<InputConvertBase> m_inputConvert;
     std::function<qint64(const QByteArray&)> m_sendData = Q_NULLPTR;
+
+    QElapsedTimer m_inputThrottler;
 };
 
 #endif // CONTROLLER_H

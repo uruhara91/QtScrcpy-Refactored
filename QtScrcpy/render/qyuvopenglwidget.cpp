@@ -369,6 +369,7 @@ void QYuvOpenGLWidget::paintGL() {
         for (int i = 0; i < 3; i++) {
             glBindTextureUnit(i, m_textures[i]);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, fb.pboIds[i]);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, m_pboStrides[i]);
             glTextureSubImage2D(m_textures[i], 0, 0, 0, 
                                 w / (i>0?2:1), 

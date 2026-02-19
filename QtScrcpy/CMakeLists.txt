@@ -336,7 +336,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(QSC_DEPLOY_PATH ${QSC_BIN_OUTPUT_PATH})
 
     # Pastikan mimalloc-static.lib ada di path library
-    target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc-static dwmapi) 
+    target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc dwmapi) 
 
     # Force include header override
     target_compile_definitions(${PROJECT_NAME} PRIVATE MIMALLOC_NEW_DELETE)

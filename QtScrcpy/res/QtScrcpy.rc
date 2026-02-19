@@ -1,5 +1,9 @@
 #include "winres.h"
 
+#define _STR(x) #x
+#define STR(x) _STR(x)
+#define AUTO_VERSION_STR STR(VERSION_MAJOR) "." STR(VERSION_MINOR) "." STR(VERSION_PATCH)
+
 IDI_ICON1       ICON      "QtScrcpy.ico"
 // GB2312编码的话，在中文系统上打包FileDescription可以显示中文
 // 在github action（英文系统）打包后FileDescription是乱码，utf8编码也不行。。
@@ -22,10 +26,10 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "RanKun"
             VALUE "FileDescription", "Android real-time display control software"
-            VALUE "FileVersion", VERSION_RC_STR
+            VALUE "FileVersion", AUTO_VERSION_STR
             VALUE "LegalCopyright", "Copyright (C) RanKun 2018-2038. All rights reserved."
             VALUE "ProductName", "QtScrcpy"
-            VALUE "ProductVersion", VERSION_RC_STR
+            VALUE "ProductVersion", AUTO_VERSION_STR
         END
     END
     BLOCK "VarFileInfo"

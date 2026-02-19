@@ -168,11 +168,15 @@ target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(FFMPEG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg")
     target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${FFMPEG_DIR}/include)
-    target_link_libraries(${QSC_PROJECT_NAME} PRIVATE
-        ${FFMPEG_DIR}/lib/${QSC_CPU_ARCH}/avcodec.lib
-        ${FFMPEG_DIR}/lib/${QSC_CPU_ARCH}/avformat.lib
-        ${FFMPEG_DIR}/lib/${QSC_CPU_ARCH}/avutil.lib
-        ${FFMPEG_DIR}/lib/${QSC_CPU_ARCH}/swscale.lib
+    target_link_libraries(QtScrcpyCore PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavcodec.a
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavformat.a
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavutil.a
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswscale.a
+    # FFmpeg statis di Windows butuh system libs ini:
+    secur32 bcrypt mfplat mfuuid ole32 strmiids
+    # Gantikan alokator memori bawaan dengan mimalloc
+    mimalloc
     )
 endif()
 

@@ -64,7 +64,8 @@ private:
         std::array<void*, 3> mappedPtrs = {nullptr};
         GLsync fence = 0;
         
-        std::atomic<int> state {0}; 
+        std::atomic<int> state {0};
+        uint64_t sequence = 0;
     };
 
     std::array<FrameBuffer, PBO_COUNT> m_frames;
@@ -77,6 +78,7 @@ private:
     std::atomic_flag m_updatePending = ATOMIC_FLAG_INIT;
 
     std::mutex m_initLock;
+    uint64_t m_globalSequence = 0;
 };
 
 #endif // QYUVOPENGLWIDGET_H

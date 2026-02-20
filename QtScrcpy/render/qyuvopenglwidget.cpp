@@ -193,6 +193,7 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
         }
     }
 
+    targetFrame->sequence = ++m_globalSequence;
     targetFrame->state.store(STATE_READY, std::memory_order_release);
 
     if (!m_updatePending.test_and_set(std::memory_order_acq_rel)) {
@@ -352,11 +353,19 @@ void QYuvOpenGLWidget::paintGL() {
     checkFences();
 
     int drawIndex = -1;
+    uint64_t highestSeq = 0;
     
     for (int i = 0; i < PBO_COUNT; ++i) {
         if (m_frames[i].state.load(std::memory_order_acquire) == STATE_READY) {
-            drawIndex = i;
-            break; 
+            if (m_frames[i].sequence > highestSeq) {
+                if (drawIndex != -1) {
+                    m_frames[drawIndex].state.store(STATE_FREE, std::memory_order_release);
+                }
+                highestSeq = m_frames[i].sequence;
+                drawIndex = i;
+            } else {
+                m_frames[i].state.store(STATE_FREE, std::memory_order_release);
+            }
         }
     }
 

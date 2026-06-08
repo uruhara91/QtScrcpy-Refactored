@@ -5,6 +5,8 @@
 #include <QSize>
 #include <QThread>
 #include <atomic>
+#include <vector>
+#include <mutex>
 
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -12,6 +14,41 @@ extern "C" {
 }
 
 class VideoSocket;
+
+class PacketPool {
+public:
+    static PacketPool& get() {
+        static PacketPool instance;
+        return instance;
+    }
+
+    AVPacket* acquire() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_pool.empty()) {
+            return av_packet_alloc();
+        }
+        AVPacket* pkt = m_pool.back();
+        m_pool.pop_back();
+        return pkt;
+    }
+
+    void release(AVPacket* pkt) {
+        if (!pkt) return;
+        av_packet_unref(pkt);
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_pool.push_back(pkt);
+    }
+
+private:
+    PacketPool() { 
+    m_pool.reserve(256); 
+}
+    ~PacketPool() {
+        for (auto p : m_pool) av_packet_free(&p);
+    }
+    std::vector<AVPacket*> m_pool;
+    std::mutex m_mutex;
+};
 
 class Demuxer : public QThread
 {
@@ -52,7 +89,8 @@ private:
 
     AVCodecContext *m_codecCtx = nullptr;
     AVCodecParserContext *m_parser = nullptr;
-    AVPacket* m_pending = nullptr;
+    
+    std::vector<uint8_t> m_configBuffer;
 
     std::atomic<bool> m_isInterrupted { false };
 };

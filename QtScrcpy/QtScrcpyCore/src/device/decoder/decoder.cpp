@@ -1,5 +1,6 @@
 #include "decoder.h"
 #include "videobuffer.h"
+#include "demuxer.h"
 #include "compat.h"
 
 #include <QDebug>
@@ -83,7 +84,7 @@ void Decoder::close()
 void Decoder::onDecodeFrame(AVPacket *packet)
 {
     auto packetDeleter = [](AVPacket* p) { 
-        if (p) av_packet_free(&p); 
+        PacketPool::get().release(p); 
     };
 
     std::unique_ptr<AVPacket, decltype(packetDeleter)> packetGuard(packet, packetDeleter);

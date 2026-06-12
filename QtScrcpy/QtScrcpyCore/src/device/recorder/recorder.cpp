@@ -4,7 +4,6 @@
 
 #include "compat.h"
 #include "recorder.h"
-#include "demuxer.h"
 
 static const AVRational SCRCPY_TIME_BASE = { 1, 1000000 }; // timestamps in us
 
@@ -22,7 +21,8 @@ Recorder::~Recorder()
 void Recorder::packetDelete(AVPacket *packet)
 {
     if (packet) {
-        PacketPool::get().release(packet);
+        av_packet_unref(packet);
+        av_packet_free(&packet);
     }
 }
 

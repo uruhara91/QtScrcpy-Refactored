@@ -2,15 +2,14 @@
 #define VIDEOBUFFER_H
 
 #include <QObject>
-#include <mutex>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <vector>
 
 #include "fpscounter.h"
 
-extern "C"
-{
+extern "C" {
 #include "libavutil/frame.h"
 }
 
@@ -21,30 +20,20 @@ public:
     explicit VideoBuffer(QObject *parent = nullptr);
     virtual ~VideoBuffer();
 
-    AVFrame *decodingFrame();
-    void offerDecodedFrame(bool &previousFrameSkipped);
-    const AVFrame *consumeRenderedFrame();
-
+    void updateLatestFrame(const AVFrame* frame);
     void peekFrameInfo(int &width, int &height, int &format);
     void peekRenderedFrame(std::function<void(int width, int height, uint8_t* dataRGB32)> onFrame);
-    
-    void setRenderExpiredFrames(bool renderExpiredFrames);
+    void setRenderExpiredFrames(bool renderExpiredFrames) { m_renderExpiredFrames = renderExpiredFrames; }
 
 signals:
     void updateFPS(quint32 fps);
 
 private:
-    void swap();
-
-private:
-    AVFrame *m_decodingFrame = nullptr;
-    AVFrame *m_renderingframe = nullptr;
+    AVFrame *m_latestFrame = nullptr;
+    std::atomic_flag m_spinLock = ATOMIC_FLAG_INIT;
     
     bool m_renderExpiredFrames = false;
-    bool m_renderingFrameConsumed = true;
-    
     FpsCounter m_fpsCounter;
-    std::mutex m_mutex;
 
     std::shared_ptr<std::vector<uint8_t>> m_cachedFrame;
     int m_cachedWidth = 0;

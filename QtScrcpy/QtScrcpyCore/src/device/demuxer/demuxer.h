@@ -6,7 +6,6 @@
 #include <QThread>
 #include <atomic>
 #include <vector>
-#include <mutex>
 
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -23,31 +22,46 @@ public:
     }
 
     AVPacket* acquire() {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_pool.empty()) {
-            return av_packet_alloc();
+        while (m_lock.test_and_set(std::memory_order_acquire)) {
+            QThread::yieldCurrentThread();
         }
-        AVPacket* pkt = m_pool.back();
-        m_pool.pop_back();
+        
+        AVPacket* pkt = nullptr;
+        if (m_pool.empty()) {
+            pkt = av_packet_alloc();
+        } else {
+            pkt = m_pool.back();
+            m_pool.pop_back();
+        }
+        
+        m_lock.clear(std::memory_order_release);
         return pkt;
     }
 
     void release(AVPacket* pkt) {
         if (!pkt) return;
         av_packet_unref(pkt);
-        std::lock_guard<std::mutex> lock(m_mutex);
+        
+        while (m_lock.test_and_set(std::memory_order_acquire)) {
+            QThread::yieldCurrentThread();
+        }
         m_pool.push_back(pkt);
+        m_lock.clear(std::memory_order_release);
     }
 
 private:
     PacketPool() { 
-    m_pool.reserve(256); 
-}
+        m_pool.reserve(256);
+        for(int i = 0; i < 64; ++i) {
+            m_pool.push_back(av_packet_alloc());
+        }
+    }
     ~PacketPool() {
         for (auto p : m_pool) av_packet_free(&p);
     }
+    
     std::vector<AVPacket*> m_pool;
-    std::mutex m_mutex;
+    std::atomic_flag m_lock = ATOMIC_FLAG_INIT;
 };
 
 class Demuxer : public QThread
@@ -75,12 +89,9 @@ protected:
     void run() override;
 
 private:
-    // Helper internal
-    bool recvPacket(AVPacket *packet);
-    bool pushPacket(AVPacket *packet);
-    bool processConfigPacket(AVPacket *packet);
+    // Pipeline Refactored
+    bool processNetworkPacket(AVPacket *packet);
     bool parse(AVPacket *packet);
-    bool processFrame(AVPacket *packet);
     qint32 recvData(quint8 *buf, qint32 bufSize);
 
 private:

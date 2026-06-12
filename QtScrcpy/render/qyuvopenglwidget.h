@@ -7,7 +7,7 @@
 #include <span>
 #include <array>
 #include <atomic>
-#include <mutex>
+#include <shared_mutex>
 
 class QYuvOpenGLWidget : public QOpenGLWidget, protected QOpenGLFunctions_4_5_Core
 {
@@ -39,12 +39,9 @@ private:
     void initShader();
     void initTextures(int width, int height);
     void deInitTextures();
-    
     void initPBOs(int height, int strideY, int strideU, int strideV);
     void deInitPBOs();
-    
     void setFrameSize(const QSize &frameSize);
-
     void checkFences();
 
 private:
@@ -54,7 +51,6 @@ private:
     GLuint m_vao = 0;
     GLuint m_vbo = 0;
     QOpenGLShaderProgram m_program;
-
     std::array<GLuint, 3> m_textures = {0, 0, 0}; 
     
     static constexpr int PBO_COUNT = 3;
@@ -63,7 +59,6 @@ private:
         std::array<GLuint, 3> pboIds = {0, 0, 0};
         std::array<void*, 3> mappedPtrs = {nullptr};
         GLsync fence = 0;
-        
         std::atomic<int> state {0};
         uint64_t sequence = 0;
     };
@@ -71,13 +66,12 @@ private:
     std::array<FrameBuffer, PBO_COUNT> m_frames;
     std::array<int, 3> m_pboStrides = {0, 0, 0};
     
-    bool m_pboSizeValid = false;
+    std::atomic<bool> m_pboSizeValid = false;
     bool m_isInitialized = false;
 
     std::atomic<bool> m_textureSizeMismatch = false;
     std::atomic_flag m_updatePending = ATOMIC_FLAG_INIT;
-
-    std::mutex m_initLock;
+    std::shared_mutex m_rwLock; 
     uint64_t m_globalSequence = 0;
 };
 

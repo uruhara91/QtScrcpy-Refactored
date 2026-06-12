@@ -13,6 +13,7 @@ extern "C" {
 
 struct AVCodecContext;
 struct AVPacket;
+struct AVFrame;
 
 struct AVCodecContextDeleter {
     void operator()(AVCodecContext* ctx) const;
@@ -37,7 +38,6 @@ public:
     void close();
 
     void peekFrame(std::function<void(int width, int height, uint8_t* dataRGB32)> onFrame);
-
     VideoBuffer* videoBuffer() const { return m_vb.get(); }
 
 public slots:
@@ -51,11 +51,10 @@ protected:
     void run() override;
 
 private:
-    void pushFrameToBuffer();
-
-private:
     std::unique_ptr<VideoBuffer> m_vb;
     std::unique_ptr<AVCodecContext, AVCodecContextDeleter> m_codecCtx;
+    
+    AVFrame* m_recvFrame = nullptr; 
     
     bool m_isCodecCtxOpen = false;
     FrameCallback m_onFrame;

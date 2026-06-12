@@ -11,33 +11,32 @@
 #define SC_PACKET_FLAG_KEY_FRAME (uint64_t(1) << 62)
 #define SC_PACKET_PTS_MASK       (SC_PACKET_FLAG_KEY_FRAME - 1)
 
-Demuxer::Demuxer(QObject *parent)
-    : QThread(parent)
-{
-    m_configBuffer.reserve(1024 * 64);
-}
-
-Demuxer::~Demuxer() 
-{
-    stopDecode();
+template <typename T>
+static T readBigEndian(const quint8 *buf) {
+    T val;
+    std::memcpy(&val, buf, sizeof(T));
+    return std::byteswap(val);
 }
 
 static void avLogCallback(void *avcl, int level, const char *fmt, va_list vl)
 {
     Q_UNUSED(avcl);
     Q_UNUSED(vl);
-
     if (level > AV_LOG_WARNING) return;
 
     QString localFmt = QString::fromUtf8(fmt).trimmed();
     localFmt.prepend("[FFmpeg] ");
     
-    if (level <= AV_LOG_ERROR) {
-        qCritical() << localFmt;
-    } else {
-        qWarning() << localFmt;
-    }
+    if (level <= AV_LOG_ERROR) qCritical() << localFmt;
+    else qWarning() << localFmt;
 }
+
+Demuxer::Demuxer(QObject *parent) : QThread(parent)
+{
+    m_configBuffer.reserve(1024 * 64);
+}
+
+Demuxer::~Demuxer() { stopDecode(); }
 
 bool Demuxer::init()
 {
@@ -55,13 +54,6 @@ void Demuxer::installVideoSocket(VideoSocket *videoSocket)
 }
 
 void Demuxer::setFrameSize(const QSize &frameSize) { m_frameSize = frameSize; }
-
-template <typename T>
-static T readBigEndian(const quint8 *buf) {
-    T val;
-    std::memcpy(&val, buf, sizeof(T));
-    return std::byteswap(val);
-}
 
 qint32 Demuxer::recvData(quint8 *buf, qint32 bufSize)
 {
@@ -104,20 +96,14 @@ void Demuxer::run()
 
     m_parser = av_parser_init(AV_CODEC_ID_H264);
     if (!m_parser) goto runQuit;
-
     m_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
 
     packet = av_packet_alloc();
     if (!packet) goto runQuit;
 
     while (!m_isInterrupted) {
-        bool ok = recvPacket(packet);
-        if (!ok) break;
-
-        ok = pushPacket(packet);
-        
+        bool ok = processNetworkPacket(packet);
         av_packet_unref(packet);
-
         if (!ok) break;
     }
 
@@ -138,23 +124,32 @@ runQuit:
     emit onStreamStop();
 }
 
-bool Demuxer::recvPacket(AVPacket *packet)
+bool Demuxer::processNetworkPacket(AVPacket *packet)
 {
     quint8 header[HEADER_SIZE];
-    qint32 r = recvData(header, HEADER_SIZE);
-    if (r < HEADER_SIZE) return false;
+    if (recvData(header, HEADER_SIZE) < HEADER_SIZE) return false;
 
     uint64_t ptsFlags = readBigEndian<uint64_t>(header);
     uint32_t len = readBigEndian<uint32_t>(&header[8]);
+    if (!len) return false;
+
+    bool isConfig = (ptsFlags & SC_PACKET_FLAG_CONFIG);
+    bool prependConfig = (!isConfig && !m_configBuffer.empty());
     
-    Q_ASSERT(len);
+    uint32_t totalLen = len + (prependConfig ? m_configBuffer.size() : 0);
 
-    if (av_new_packet(packet, static_cast<int>(len))) return false;
+    if (av_new_packet(packet, static_cast<int>(totalLen)) != 0) return false;
 
-    r = recvData(packet->data, static_cast<qint32>(len));
-    if (r < 0 || static_cast<uint32_t>(r) < len) return false;
+    uint8_t *writePtr = packet->data;
+    
+    if (prependConfig) {
+        std::memcpy(writePtr, m_configBuffer.data(), m_configBuffer.size());
+        writePtr += m_configBuffer.size();
+    }
 
-    if (ptsFlags & SC_PACKET_FLAG_CONFIG) {
+    if (recvData(writePtr, len) < static_cast<qint32>(len)) return false;
+
+    if (isConfig) {
         packet->pts = AV_NOPTS_VALUE;
     } else {
         packet->pts = ptsFlags & SC_PACKET_PTS_MASK;
@@ -163,54 +158,23 @@ bool Demuxer::recvPacket(AVPacket *packet)
     if (ptsFlags & SC_PACKET_FLAG_KEY_FRAME) {
         packet->flags |= AV_PKT_FLAG_KEY;
     }
-
     packet->dts = packet->pts;
-    return true;
-}
-
-bool Demuxer::pushPacket(AVPacket *packet)
-{
-    bool isConfig = (packet->pts == AV_NOPTS_VALUE);
 
     if (isConfig) {
-        m_configBuffer.insert(m_configBuffer.end(), packet->data, packet->data + packet->size);
-        return processConfigPacket(packet);
-    }
-
-    if (!m_configBuffer.empty()) {
-        AVPacket *combined = av_packet_alloc();
-        if (av_new_packet(combined, m_configBuffer.size() + packet->size)) {
-            av_packet_free(&combined);
-            return false;
+        m_configBuffer.assign(packet->data, packet->data + packet->size);
+        
+        AVPacket *clone = PacketPool::get().acquire();
+        if (av_packet_ref(clone, packet) >= 0) {
+            emit getConfigFrame(clone);
+        } else {
+            PacketPool::get().release(clone);
         }
-
-        std::memcpy(combined->data, m_configBuffer.data(), m_configBuffer.size());
-        std::memcpy(combined->data + m_configBuffer.size(), packet->data, packet->size);
-
-        combined->pts = packet->pts;
-        combined->dts = packet->dts;
-        combined->flags = packet->flags;
-
-        bool ok = parse(combined);
-        av_packet_free(&combined);
-        m_configBuffer.clear();
-        return ok;
+        return true;
     }
+
+    if (prependConfig) m_configBuffer.clear();
 
     return parse(packet);
-}
-
-bool Demuxer::processConfigPacket(AVPacket *packet)
-{
-    // [OPTIMASI] Ambil struct dari pool, hindari av_packet_clone
-    AVPacket *clone = PacketPool::get().acquire();
-    if (av_packet_ref(clone, packet) < 0) {
-        PacketPool::get().release(clone);
-        return false;
-    }
-    
-    emit getConfigFrame(clone);
-    return true;
 }
 
 bool Demuxer::parse(AVPacket *packet)
@@ -218,20 +182,15 @@ bool Demuxer::parse(AVPacket *packet)
     quint8 *outData = nullptr;
     int outLen = 0;
 
+    // Parser H264 FFmpeg
     av_parser_parse2(m_parser, m_codecCtx, &outData, &outLen, 
-                     packet->data, packet->size, AV_NOPTS_VALUE, AV_NOPTS_VALUE, -1);
+                     packet->data, packet->size, packet->pts, packet->dts, -1);
 
     if (m_parser->key_frame == 1) {
         packet->flags |= AV_PKT_FLAG_KEY;
     }
 
-    return processFrame(packet);
-}
-
-bool Demuxer::processFrame(AVPacket *packet)
-{
-    packet->dts = packet->pts;
-    
+    // Cloning
     AVPacket *clone = PacketPool::get().acquire();
     if (av_packet_ref(clone, packet) < 0) {
         PacketPool::get().release(clone);

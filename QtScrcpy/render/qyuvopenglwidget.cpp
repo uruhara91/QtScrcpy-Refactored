@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <bit>
 #include <concepts>
+#include <mutex>
+#include <shared_mutex>
 
 extern "C" {
 #include <libavutil/imgutils.h>

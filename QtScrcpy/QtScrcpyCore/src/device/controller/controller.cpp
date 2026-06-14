@@ -8,42 +8,51 @@
 #include "videosocket.h"
 
 Controller::Controller(std::function<qint64(const QByteArray&)> sendData, QString gameScript, QObject *parent)
-    : QObject(parent)
-    , m_sendData(sendData)
+    : QObject(parent), m_sendData(sendData)
 {
     m_receiver = new Receiver(this);
     Q_ASSERT(m_receiver);
-
     updateScript(gameScript);
-    
-    // 1. Hubungkan sinyal Queued untuk bypass QEvent overhead
-    connect(this, &Controller::requestSendControl, this, &Controller::sendControl, Qt::QueuedConnection);
 
-    // 2. Konfigurasi Mouse Throttler (125Hz = 8ms)
-    m_mouseTimer.setInterval(8);
-    m_mouseTimer.setTimerType(Qt::PreciseTimer);
-    connect(&m_mouseTimer, &QTimer::timeout, this, &Controller::processPendingMouseMove);
-    m_mouseTimer.start();
+    // Timer jaringan berjalan tiap 8ms (125Hz)
+    m_networkTimer.setInterval(8);
+    m_networkTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_networkTimer, &QTimer::timeout, this, &Controller::flushNetworkBuffer);
+    m_networkTimer.start();
 }
 
 Controller::~Controller() {
-    m_mouseTimer.stop();
+    m_networkTimer.stop();
+    flushNetworkBuffer();
 }
 
 void Controller::postControlMsg(ControlMsg *controlMsg)
 {
-    if (controlMsg) {
-        // Serialisasi datanya SEKARANG. QByteArray menggunakan memory yang aman
-        // dan dikelola otomatis oleh Qt (Implicit Sharing).
-        QByteArray data = controlMsg->serializeData();
+    if (!controlMsg) return;
+    QByteArray rawData = controlMsg->serializeData();
+    
+    {
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        m_sendBuffer.append(rawData); 
+    }
+
+    delete controlMsg;
+}
+
+void Controller::flushNetworkBuffer()
+{
+    QByteArray dataToSend;
+    
+    {
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        if (m_sendBuffer.isEmpty()) return;
         
-        // Kirim via signal-slot QueuedConnection
-        emit requestSendControl(data);
-        
-        // Langsung HAPUS objeknya di sini. Kita tidak lagi butuh QEvent.
-        // Jika kamu merombak kelas lain nanti, objek ControlMsg bahkan bisa
-        // dialokasikan di stack (tanpa "new") untuk performa maksimal.
-        delete controlMsg; 
+        dataToSend = m_sendBuffer;
+        m_sendBuffer.clear();
+    }
+
+    if (m_sendData) {
+        m_sendData(dataToSend);
     }
 }
 
@@ -223,28 +232,9 @@ void Controller::setDisplayPower(bool on)
 
 void Controller::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
 {
-    if (!m_inputConvert) {
-        return;
+    if (m_inputConvert) {
+        m_inputConvert->mouseEvent(from, frameSize, showSize);
     }
-
-    // Jika ini hanya pergerakan (Move), jangan buat ControlMsg!
-    // Cukup simpan koordinat terakhirnya.
-    if (from->type() == QEvent::MouseMove) {
-        m_lastMouseLocalPos = from->localPos();
-        m_lastMouseWindowPos = from->windowPos();
-        m_lastMouseScreenPos = from->screenPos();
-        m_lastMouseButtons = from->buttons();
-        m_lastMouseModifiers = from->modifiers();
-        m_lastFrameSize = frameSize;
-        m_lastShowSize = showSize;
-        
-        m_hasPendingMouseMove = true;
-        return; // Hentikan eksekusi di sini
-    }
-    
-    // Jika ini adalah Klik (Press/Release) atau Scroll, kirim INSTAN
-    // agar terasa sangat responsif dan tidak delay.
-    m_inputConvert->mouseEvent(from, frameSize, showSize);
 }
 
 void Controller::processPendingMouseMove()

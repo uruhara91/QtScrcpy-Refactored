@@ -68,6 +68,7 @@ signals:
 
 private slots:
     void processPendingMouseMove();
+    void flushNetworkBuffer();
 
 protected:
     bool event(QEvent *event);
@@ -80,6 +81,9 @@ private:
     QPointer<InputConvertBase> m_inputConvert;
     std::function<qint64(const QByteArray&)> m_sendData = Q_NULLPTR;
     QTimer m_mouseTimer;
+    QTimer m_networkTimer;
+    QByteArray m_sendBuffer;
+    std::mutex m_bufferMutex;
     bool m_hasPendingMouseMove = false;
     
     // Menyimpan state terakhir mouse

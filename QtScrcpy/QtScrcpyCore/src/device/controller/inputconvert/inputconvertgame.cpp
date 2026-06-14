@@ -608,36 +608,35 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
     QPoint currentPos = from->position().toPoint();
 #endif
 
-    if (currentPos == centerPos) {
-        m_ctrlMouseMove.lastPos = QPointF(centerPos);
+    // Abaikan event sintetis hasil setPos kita sendiri
+    if (currentPos == centerPos && m_ctrlMouseMove.lastPos == QPointF(centerPos)) {
         return true;
     }
 
+    // Inisialisasi lastPos pertama kali
     if (m_ctrlMouseMove.lastPos.isNull()) {
-         m_ctrlMouseMove.lastPos = QPointF(centerPos);
-         moveCursorTo(from, centerPos);
-         return true;
-    }
-
-    if (m_ctrlMouseMove.ignoreCount > 0) {
-        --m_ctrlMouseMove.ignoreCount;
-        moveCursorTo(from, centerPos);
+        m_ctrlMouseMove.lastPos = QPointF(currentPos);
         return true;
     }
+
+    // Hitung Jarak dari posisi terakhir kursor, BUKAN dari tengah layar!
+    QPointF distance_raw = QPointF(currentPos) - m_ctrlMouseMove.lastPos;
+    m_ctrlMouseMove.lastPos = QPointF(currentPos); // Update untuk event selanjutnya
 
     if (m_processMouseMove) {
-        QPointF distance_raw = QPointF(currentPos) - QPointF(centerPos);
         QPointF speedRatio = m_keyMap.getMouseMoveMap().data.mouseMove.speedRatio;
+        if (qFuzzyIsNull(speedRatio.x())) speedRatio.setX(1.0);
+        if (qFuzzyIsNull(speedRatio.y())) speedRatio.setY(1.0);
+
         QPointF distance {distance_raw.x() / speedRatio.x(), distance_raw.y() / speedRatio.y()};
+
         m_ctrlMouseMove.lastConverPos.setX(m_ctrlMouseMove.lastConverPos.x() + distance.x() / m_showSize.width());
         m_ctrlMouseMove.lastConverPos.setY(m_ctrlMouseMove.lastConverPos.y() + distance.y() / m_showSize.height());
 
         mouseMoveStartTouch(from);
         startMouseMoveTimer();
 
-        m_ctrlMouseMove.lastConverPos.setX(m_ctrlMouseMove.lastConverPos.x() + distance.x() / m_showSize.width());
-        m_ctrlMouseMove.lastConverPos.setY(m_ctrlMouseMove.lastConverPos.y() + distance.y() / m_showSize.height());
-
+        // Safe zone boundary check untuk HP
         if (m_ctrlMouseMove.lastConverPos.x() < 0.05 || m_ctrlMouseMove.lastConverPos.x() > 0.95 || 
             m_ctrlMouseMove.lastConverPos.y() < 0.05 || m_ctrlMouseMove.lastConverPos.y() > 0.95) {
             
@@ -653,6 +652,7 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
                 mouseMoveStopTouch();
                 m_ctrlMouseMove.ignoreCount = 5;
                 moveCursorTo(from, centerPos);
+                m_ctrlMouseMove.lastPos = QPointF(centerPos);
                 return true;
             }
         }
@@ -661,14 +661,20 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
             m_ctrlMouseMove.paceTimer.start();
         }
 
+        // THROTTLING PENGIRIMAN SOCKET (~125Hz)
         if (m_ctrlMouseMove.paceTimer.elapsed() >= 8) { 
             sendTouchMoveEvent(getTouchID(Qt::ExtraButton24), m_ctrlMouseMove.lastConverPos);
             m_ctrlMouseMove.paceTimer.restart();
-            moveCursorTo(from, centerPos);
-            m_ctrlMouseMove.lastPos = QPointF(centerPos);
         }
-    } else {
+
+    }
+
+    int diffX = currentPos.x() - centerPos.x();
+    int diffY = currentPos.y() - centerPos.y();
+    
+    if (diffX * diffX + diffY * diffY > 2500) {
         moveCursorTo(from, centerPos);
+        m_ctrlMouseMove.lastPos = QPointF(centerPos);
     }
 
     return true;

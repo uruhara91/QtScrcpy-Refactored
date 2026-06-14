@@ -220,28 +220,29 @@ void Device::initSignals()
                     return;
                 }
 
-                // recv device msg
-                connect(m_server->getControlSocket(), &QTcpSocket::readyRead, this, [this](){
-                    if (!m_controller) return;
+        
+         connect(m_server->getControlSocket(), &QTcpSocket::readyRead, this, [this](){
+            if (!m_controller) return;
 
-                    auto controlSocket = m_server->getControlSocket();
-                    int quota = 60;
-                    while (controlSocket->bytesAvailable() && quota-- > 0) { 
-                        QByteArray byteArray = controlSocket->peek(controlSocket->bytesAvailable());
-                        DeviceMsg deviceMsg;
-                        qint32 consume = deviceMsg.deserialize(byteArray);
-                        if (0 >= consume) break;
-                        
-                        controlSocket->read(consume);
-                        m_controller->recvDeviceMsg(&deviceMsg);
-                    }
-                });
-
-                if (m_params.closeScreen && m_params.display && m_controller) {
-                    m_controller->setDisplayPower(false);
+            auto controlSocket = m_server->getControlSocket();
+            int quota = 60;
+            while (controlSocket->bytesAvailable() && quota-- > 0) { 
+                QByteArray byteArray = controlSocket->peek(controlSocket->bytesAvailable());
+                
+                // FIX: Wajib pakai 'new' karena Receiver dan Qt Event Loop akan 
+                // mengambil alih kepemilikan memori ini (dan men-delete-nya nanti).
+                DeviceMsg *deviceMsg = new DeviceMsg(); 
+                
+                qint32 consume = deviceMsg->deserialize(byteArray);
+                
+                // Jika data belum lengkap, hapus memori yang barusan dibuat lalu keluar dari loop
+                if (0 >= consume) {
+                    delete deviceMsg; 
+                    break;
                 }
-            } else {
-                m_server->stop();
+                
+                controlSocket->read(consume);
+                m_controller->recvDeviceMsg(deviceMsg); // Oper pointer aslinya
             }
         });
         connect(m_server.get(), &Server::serverStoped, this, [this]() {

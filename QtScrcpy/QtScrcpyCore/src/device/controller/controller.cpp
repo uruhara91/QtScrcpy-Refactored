@@ -237,33 +237,6 @@ void Controller::mouseEvent(const QMouseEvent *from, const QSize &frameSize, con
     }
 }
 
-void Controller::processPendingMouseMove()
-{
-    // Jika tidak ada pergerakan sejak tick terakhir, diam saja.
-    if (!m_hasPendingMouseMove) {
-        return;
-    }
-    
-    // Rakit ulang QMouseEvent dari state terakhir
-    QMouseEvent fakeEvent(
-        QEvent::MouseMove, 
-        m_lastMouseLocalPos, 
-        m_lastMouseWindowPos, 
-        m_lastMouseScreenPos, 
-        Qt::NoButton, 
-        m_lastMouseButtons, 
-        m_lastMouseModifiers
-    );
-    
-    // Tembakkan ke converter
-    if (m_inputConvert) {
-        m_inputConvert->mouseEvent(&fakeEvent, m_lastFrameSize, m_lastShowSize);
-    }
-    
-    // Reset status
-    m_hasPendingMouseMove = false;
-}
-
 void Controller::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
 {
     if (m_inputConvert) {

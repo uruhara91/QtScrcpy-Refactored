@@ -68,7 +68,6 @@ signals:
     void requestSendControl(const QByteArray &buffer);
 
 private slots:
-    void processPendingMouseMove();
     void flushNetworkBuffer();
 
 protected:
@@ -81,20 +80,9 @@ private:
     QPointer<Receiver> m_receiver;
     QPointer<InputConvertBase> m_inputConvert;
     std::function<qint64(const QByteArray&)> m_sendData = Q_NULLPTR;
-    QTimer m_mouseTimer;
     QTimer m_networkTimer;
     QByteArray m_sendBuffer;
     std::mutex m_bufferMutex;
-    bool m_hasPendingMouseMove = false;
-    
-    // Menyimpan state terakhir mouse
-    QPointF m_lastMouseLocalPos;
-    QPointF m_lastMouseWindowPos;
-    QPointF m_lastMouseScreenPos;
-    Qt::MouseButtons m_lastMouseButtons;
-    Qt::KeyboardModifiers m_lastMouseModifiers;
-    QSize m_lastFrameSize;
-    QSize m_lastShowSize;
 };
 
 #endif // CONTROLLER_H

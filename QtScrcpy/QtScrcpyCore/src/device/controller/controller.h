@@ -29,6 +29,7 @@ public:
     void postControlMsg(ControlMsg *controlMsg);
     void recvDeviceMsg(DeviceMsg *deviceMsg);
     void test(QRect rc);
+    bool sendControl(const QByteArray &buffer);
 
     void updateScript(QString gameScript = "");
     bool isCurrentCustomKeymap();
@@ -67,7 +68,6 @@ protected:
     bool event(QEvent *event);
 
 private:
-    bool sendControl(const QByteArray &buffer);
     void postKeyCodeClick(AndroidKeycode keycode);
 
 private:

@@ -2,7 +2,7 @@
 #define INPUTCONVERTGAME_H
 
 #include <QPointF>
-#include <QQueue>
+#include <QVector>
 
 #include "inputconvertnormal.h"
 #include "keymap.h"
@@ -68,7 +68,7 @@ protected:
     void getDelayQueue(const QPointF& start, const QPointF& end,
                        const double& distanceStep, const double& posStepconst,
                        quint32 lowestTimer, quint32 highestTimer,
-                       QQueue<QPointF>& queuePos, QQueue<quint32>& queueTimer);
+                       QVector<QPointF>& pathPos, QVector<quint32>& pathTimer);
 
 protected:
     void timerEvent(QTimerEvent *event);
@@ -101,8 +101,9 @@ private:
         struct {
             QPointF currentPos;
             QTimer* timer = nullptr;
-            QQueue<QPointF> queuePos;
-            QQueue<quint32> queueTimer;
+            QVector<QPointF> pathPos;
+            QVector<quint32> pathTimer;
+            int stepIndex = 0;
             int pressedNum = 0;
         } delayData;
     } m_ctrlSteerWheel;
@@ -122,8 +123,9 @@ private:
     struct {
         QPointF currentPos;
         QTimer* timer = nullptr;
-        QQueue<QPointF> queuePos;
-        QQueue<quint32> queueTimer;
+        QVector<QPointF> pathPos;
+        QVector<quint32> pathTimer;
+        int stepIndex = 0;
         int pressKey = 0;
     } m_dragDelayData;
 

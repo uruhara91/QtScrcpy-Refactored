@@ -3,6 +3,7 @@
 
 #include <QPointF>
 #include <QVector>
+#include <QElapsedTimer>
 
 #include "inputconvertnormal.h"
 #include "keymap.h"

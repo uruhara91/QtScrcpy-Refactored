@@ -8,6 +8,7 @@
 #include <QSize>
 #include <QTimer>
 #include <QMouseEvent>
+#include <mutex>
 
 #include "adbprocess.h"
 #include "inputconvertbase.h"

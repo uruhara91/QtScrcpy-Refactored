@@ -2,6 +2,7 @@
 #define RECEIVER_H
 
 #include <QPointer>
+#include <QObject>
 
 class DeviceMsg;
 class Receiver : public QObject

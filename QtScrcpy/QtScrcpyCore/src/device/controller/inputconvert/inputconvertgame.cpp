@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <random>
 #include <cmath>
+#include <QHash>
 
 #include "inputconvertgame.h"
 #include "../controller.h"
@@ -474,7 +475,7 @@ void InputConvertGame::processSteerWheel(const KeyMap::KeyMapNode &node, const Q
 
 QPointF InputConvertGame::addJitter(const QPointF& pos) {
     thread_local std::mt19937 gen(std::random_device{}());
-    // Radius acak sekitar 0.002 dari rasio layar (sekitar 2-4 piksel, sangat aman)
+    // Radius sesuai: -0.002 sampai 0.002
     std::uniform_real_distribution<double> dist(-0.002, 0.002); 
     
     return QPointF(pos.x() + dist(gen), pos.y() + dist(gen));
@@ -487,27 +488,36 @@ void InputConvertGame::processKeyClick(const QPointF &clickPos, bool clickTwice,
         hideMouseCursor(!m_needBackMouseMove);
     }
 
-    // Kalkulasi titik sentuh dengan Jitter untuk event ini
-    // Agar saat ditekan (Down) dan dilepas (Up) posisinya tetap sama
-    static QPointF currentJitterPos; 
+    int key = from->key();
 
     if (QEvent::KeyPress == from->type()) {
-        currentJitterPos = addJitter(clickPos); // Terapkan Jitter saat jari turun
-        int id = attachTouchID(from->key());
-        sendTouchDownEvent(id, currentJitterPos);
+        // Hasilkan Jitter lalu SIMPAN di hash map berdasarkan tombol
+        QPointF jitterPos = addJitter(clickPos);
+        m_keyJitterMap[key] = jitterPos; 
+
+        int id = attachTouchID(key);
+        sendTouchDownEvent(id, jitterPos);
         
         if (clickTwice) {
-            sendTouchUpEvent(getTouchID(from->key()), currentJitterPos);
-            detachTouchID(from->key());
+            sendTouchUpEvent(getTouchID(key), jitterPos);
+            detachTouchID(key);
         }
     } else if (QEvent::KeyRelease == from->type()) {
+        // Ambil posisi Jitter yang tadi disimpan, kalau tidak ada, pakai posisi dasar
+        QPointF jitterPos = m_keyJitterMap.value(key, clickPos);
+
         if (clickTwice) {
-            int id = attachTouchID(from->key());
-            currentJitterPos = addJitter(clickPos); // Jitter baru untuk klik kedua
-            sendTouchDownEvent(id, currentJitterPos);
+            int id = attachTouchID(key);
+            // Jitter baru khusus untuk klik kedua dari clickTwice
+            jitterPos = addJitter(clickPos); 
+            sendTouchDownEvent(id, jitterPos);
         }
-        sendTouchUpEvent(getTouchID(from->key()), currentJitterPos);
-        detachTouchID(from->key());
+        
+        sendTouchUpEvent(getTouchID(key), jitterPos);
+        detachTouchID(key);
+        
+        // Bersihkan memori hash map setelah tombol dilepas
+        m_keyJitterMap.remove(key);
     }
 }
 
@@ -519,18 +529,24 @@ void InputConvertGame::processKeyClickMulti(const KeyMap::DelayClickNode *nodes,
 
     int key = from->key();
     int delay = 0;
-    QPointF clickPos;
 
     for (int i = 0; i < count; i++) {
         delay += nodes[i].delay;
-        clickPos = nodes[i].pos;
+        
+        // Tiap aksi makro punya posisi Jitter beda-beda (humanized scatter)
+        QPointF clickPos = addJitter(nodes[i].pos); 
+
         QTimer::singleShot(delay, this, [this, key, clickPos]() {
             int id = attachTouchID(key);
             sendTouchDownEvent(id, clickPos);
         });
 
-        // Don't up it too fast
-        delay += 20;
+        // WAKTU JARIMU MENEMPEL SEKARANG DIACAK (Humanized Dwell Time)
+        // Bukan lagi statis 20ms
+        thread_local std::mt19937 gen(std::random_device{}());
+        std::uniform_int_distribution<int> dwellDist(35, 75); // Antara 35ms - 75ms
+        delay += dwellDist(gen); 
+        
         QTimer::singleShot(delay, this, [this, key, clickPos]() {
             int id = getTouchID(key);
             sendTouchUpEvent(id, clickPos);

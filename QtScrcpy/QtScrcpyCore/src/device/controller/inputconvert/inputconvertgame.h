@@ -31,7 +31,6 @@ protected:
     void sendKeyEvent(AndroidKeyeventAction action, AndroidKeycode keyCode);
     QPointF calcFrameAbsolutePos(QPointF relativePos);
     QPointF calcScreenAbsolutePos(QPointF relativePos);
-    QPointF addJitter(const QPointF& pos);
 
     // multi touch id
     int attachTouchID(int key);
@@ -130,6 +129,12 @@ private:
         int stepIndex = 0;
         int pressKey = 0;
     } m_dragDelayData;
+
+    // Hash map untuk mencocokkan Jitter Posisi turun (Press) dan naik (Release)
+    QHash<int, QPointF> m_keyJitterMap; 
+
+    // Helper Jitter
+    QPointF addJitter(const QPointF& pos);
 
     void stopSteerWheel();
     void stopDrag();

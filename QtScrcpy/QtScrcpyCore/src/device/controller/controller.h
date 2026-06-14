@@ -6,7 +6,8 @@
 #include <QPointer>
 #include <QRect>
 #include <QSize>
-#include <QElapsedTimer>
+#include <QTimer>
+#include <QMouseEvent>
 
 #include "adbprocess.h"
 #include "inputconvertbase.h"
@@ -63,6 +64,10 @@ public:
 
 signals:
     void grabCursor(bool grab);
+    void requestSendControl(const QByteArray &buffer);
+
+private slots:
+    void processPendingMouseMove();
 
 protected:
     bool event(QEvent *event);
@@ -74,8 +79,17 @@ private:
     QPointer<Receiver> m_receiver;
     QPointer<InputConvertBase> m_inputConvert;
     std::function<qint64(const QByteArray&)> m_sendData = Q_NULLPTR;
-
-    QElapsedTimer m_inputThrottler;
+    QTimer m_mouseTimer;
+    bool m_hasPendingMouseMove = false;
+    
+    // Menyimpan state terakhir mouse
+    QPointF m_lastMouseLocalPos;
+    QPointF m_lastMouseWindowPos;
+    QPointF m_lastMouseScreenPos;
+    Qt::MouseButtons m_lastMouseButtons;
+    Qt::KeyboardModifiers m_lastMouseModifiers;
+    QSize m_lastFrameSize;
+    QSize m_lastShowSize;
 };
 
 #endif // CONTROLLER_H

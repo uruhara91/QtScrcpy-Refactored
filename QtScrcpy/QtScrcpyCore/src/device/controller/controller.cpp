@@ -16,15 +16,34 @@ Controller::Controller(std::function<qint64(const QByteArray&)> sendData, QStrin
 
     updateScript(gameScript);
     
-    m_inputThrottler.start();
+    // 1. Hubungkan sinyal Queued untuk bypass QEvent overhead
+    connect(this, &Controller::requestSendControl, this, &Controller::sendControl, Qt::QueuedConnection);
+
+    // 2. Konfigurasi Mouse Throttler (125Hz = 8ms)
+    m_mouseTimer.setInterval(8);
+    m_mouseTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_mouseTimer, &QTimer::timeout, this, &Controller::processPendingMouseMove);
+    m_mouseTimer.start();
 }
 
-Controller::~Controller() {}
+Controller::~Controller() {
+    m_mouseTimer.stop();
+}
 
 void Controller::postControlMsg(ControlMsg *controlMsg)
 {
     if (controlMsg) {
-        QCoreApplication::postEvent(this, controlMsg);
+        // Serialisasi datanya SEKARANG. QByteArray menggunakan memory yang aman
+        // dan dikelola otomatis oleh Qt (Implicit Sharing).
+        QByteArray data = controlMsg->serializeData();
+        
+        // Kirim via signal-slot QueuedConnection
+        emit requestSendControl(data);
+        
+        // Langsung HAPUS objeknya di sini. Kita tidak lagi butuh QEvent.
+        // Jika kamu merombak kelas lain nanti, objek ControlMsg bahkan bisa
+        // dialokasikan di stack (tanpa "new") untuk performa maksimal.
+        delete controlMsg; 
     }
 }
 
@@ -204,18 +223,55 @@ void Controller::setDisplayPower(bool on)
 
 void Controller::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
 {
-    /*
+    if (!m_inputConvert) {
+        return;
+    }
+
+    // Jika ini hanya pergerakan (Move), jangan buat ControlMsg!
+    // Cukup simpan koordinat terakhirnya.
     if (from->type() == QEvent::MouseMove) {
-        if (m_inputThrottler.elapsed() < 8) { 
-            return;
-        }
-        m_inputThrottler.restart();
+        m_lastMouseLocalPos = from->localPos();
+        m_lastMouseWindowPos = from->windowPos();
+        m_lastMouseScreenPos = from->screenPos();
+        m_lastMouseButtons = from->buttons();
+        m_lastMouseModifiers = from->modifiers();
+        m_lastFrameSize = frameSize;
+        m_lastShowSize = showSize;
+        
+        m_hasPendingMouseMove = true;
+        return; // Hentikan eksekusi di sini
     }
-    */
     
-    if (m_inputConvert) {
-        m_inputConvert->mouseEvent(from, frameSize, showSize);
+    // Jika ini adalah Klik (Press/Release) atau Scroll, kirim INSTAN
+    // agar terasa sangat responsif dan tidak delay.
+    m_inputConvert->mouseEvent(from, frameSize, showSize);
+}
+
+void Controller::processPendingMouseMove()
+{
+    // Jika tidak ada pergerakan sejak tick terakhir, diam saja.
+    if (!m_hasPendingMouseMove) {
+        return;
     }
+    
+    // Rakit ulang QMouseEvent dari state terakhir
+    QMouseEvent fakeEvent(
+        QEvent::MouseMove, 
+        m_lastMouseLocalPos, 
+        m_lastMouseWindowPos, 
+        m_lastMouseScreenPos, 
+        Qt::NoButton, 
+        m_lastMouseButtons, 
+        m_lastMouseModifiers
+    );
+    
+    // Tembakkan ke converter
+    if (m_inputConvert) {
+        m_inputConvert->mouseEvent(&fakeEvent, m_lastFrameSize, m_lastShowSize);
+    }
+    
+    // Reset status
+    m_hasPendingMouseMove = false;
 }
 
 void Controller::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
@@ -234,6 +290,9 @@ void Controller::keyEvent(const QKeyEvent *from, const QSize &frameSize, const Q
 
 bool Controller::event(QEvent *event)
 {
+    // Bagian ini sekarang hampir tidak akan pernah dipanggil lagi untuk ControlMsg, 
+    // karena kita sudah mem-bypass QCoreApplication::postEvent.
+    // Tetapi dibiarkan saja sebagai fallback.
     if (event && static_cast<ControlMsg::Type>(event->type()) == ControlMsg::Control) {
         ControlMsg *controlMsg = dynamic_cast<ControlMsg *>(event);
         if (controlMsg) {

@@ -31,6 +31,7 @@ protected:
     void sendKeyEvent(AndroidKeyeventAction action, AndroidKeycode keyCode);
     QPointF calcFrameAbsolutePos(QPointF relativePos);
     QPointF calcScreenAbsolutePos(QPointF relativePos);
+    QPointF addJitter(const QPointF& pos);
 
     // multi touch id
     int attachTouchID(int key);

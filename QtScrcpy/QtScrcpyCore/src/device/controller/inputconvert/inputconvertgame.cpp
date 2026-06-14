@@ -472,6 +472,14 @@ void InputConvertGame::processSteerWheel(const KeyMap::KeyMapNode &node, const Q
 
 // -------- key event --------
 
+QPointF InputConvertGame::addJitter(const QPointF& pos) {
+    thread_local std::mt19937 gen(std::random_device{}());
+    // Radius acak sekitar 0.002 dari rasio layar (sekitar 2-4 piksel, sangat aman)
+    std::uniform_real_distribution<double> dist(-0.002, 0.002); 
+    
+    return QPointF(pos.x() + dist(gen), pos.y() + dist(gen));
+}
+
 void InputConvertGame::processKeyClick(const QPointF &clickPos, bool clickTwice, bool switchMap, const QKeyEvent *from)
 {
     if (switchMap && QEvent::KeyRelease == from->type()) {
@@ -479,19 +487,26 @@ void InputConvertGame::processKeyClick(const QPointF &clickPos, bool clickTwice,
         hideMouseCursor(!m_needBackMouseMove);
     }
 
+    // Kalkulasi titik sentuh dengan Jitter untuk event ini
+    // Agar saat ditekan (Down) dan dilepas (Up) posisinya tetap sama
+    static QPointF currentJitterPos; 
+
     if (QEvent::KeyPress == from->type()) {
+        currentJitterPos = addJitter(clickPos); // Terapkan Jitter saat jari turun
         int id = attachTouchID(from->key());
-        sendTouchDownEvent(id, clickPos);
+        sendTouchDownEvent(id, currentJitterPos);
+        
         if (clickTwice) {
-            sendTouchUpEvent(getTouchID(from->key()), clickPos);
+            sendTouchUpEvent(getTouchID(from->key()), currentJitterPos);
             detachTouchID(from->key());
         }
     } else if (QEvent::KeyRelease == from->type()) {
         if (clickTwice) {
             int id = attachTouchID(from->key());
-            sendTouchDownEvent(id, clickPos);
+            currentJitterPos = addJitter(clickPos); // Jitter baru untuk klik kedua
+            sendTouchDownEvent(id, currentJitterPos);
         }
-        sendTouchUpEvent(getTouchID(from->key()), clickPos);
+        sendTouchUpEvent(getTouchID(from->key()), currentJitterPos);
         detachTouchID(from->key());
     }
 }

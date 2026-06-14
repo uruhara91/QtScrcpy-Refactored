@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <QRandomGenerator>
 #include <QElapsedTimer>
+#include <random>
 
 #include "inputconvertgame.h"
 #include "../controller.h"
@@ -189,37 +190,41 @@ void InputConvertGame::sendTouchEvent(int id, QPointF pos, AndroidMotioneventAct
         return;
     }
     
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TOUCH);
-    if (!controlMsg) {
-        return;
-    }
-
     QPoint absolutePos = calcFrameAbsolutePos(pos).toPoint();
     static QPoint lastAbsolutePos = absolutePos;
     if (AMOTION_EVENT_ACTION_MOVE == action && lastAbsolutePos == absolutePos) {
-        delete controlMsg;
         return;
     }
     lastAbsolutePos = absolutePos;
 
-    controlMsg->setInjectTouchMsgData(
+    // OPTIMASI: Alokasi objek di Stack, jauh lebih cepat dari Heap (new)
+    ControlMsg controlMsg(ControlMsg::CMT_INJECT_TOUCH);
+    
+    controlMsg.setInjectTouchMsgData(
         static_cast<quint64>(id),
         action,
         static_cast<AndroidMotioneventButtons>(0),
         static_cast<AndroidMotioneventButtons>(0),
         QRect(absolutePos, m_frameSize),
         AMOTION_EVENT_ACTION_DOWN == action ? 1.0f : 0.0f);
-    sendControlMsg(controlMsg);
+        
+    // OPTIMASI: Langsung serialize dan kirim ke socket via controller, 
+    // Bypass QCoreApplication::postEvent() !
+    if (m_controller) {
+        m_controller->sendControl(controlMsg.serializeData());
+    }
 }
 
 void InputConvertGame::sendKeyEvent(AndroidKeyeventAction action, AndroidKeycode keyCode) {
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
-    if (!controlMsg) {
-        return;
-    }
+    // OPTIMASI: Alokasi Stack
+    ControlMsg controlMsg(ControlMsg::CMT_INJECT_KEYCODE);
 
-    controlMsg->setInjectKeycodeMsgData(action, keyCode, 0, AMETA_NONE);
-    sendControlMsg(controlMsg);
+    controlMsg.setInjectKeycodeMsgData(action, keyCode, 0, AMETA_NONE);
+    
+    // Langsung tembak ke socket
+    if (m_controller) {
+        m_controller->sendControl(controlMsg.serializeData());
+    }
 }
 
 QPointF InputConvertGame::calcFrameAbsolutePos(QPointF relativePos)
@@ -289,20 +294,25 @@ void InputConvertGame::getDelayQueue(const QPointF& start, const QPointF& end,
 
     int steps = static_cast<int>(e);
     
-    // Clear tanpa dealokasi kapasitas penuh (menggunakan memori yang sudah ada jika cukup)
     pathPos.clear();
     pathTimer.clear();
 
     if (steps > 0) {
-        // Mencegah cache miss dengan mereservasi ruang memori di awal
         pathPos.reserve(steps);
         pathTimer.reserve(steps);
 
+        // OPTIMASI: Thread-local PRNG (sangat ringan dan lock-free)
+        thread_local std::mt19937 gen(std::random_device{}());
+        std::uniform_real_distribution<double> posDist(-posStepconst, posStepconst);
+        std::uniform_int_distribution<quint32> timeDist(lowestTimer, highestTimer);
+
         for(int i = 1; i <= steps; i++) {
-            QPointF pos(x1 + (QRandomGenerator::global()->bounded(posStepconst * 2) - posStepconst), 
-                        y1 + (QRandomGenerator::global()->bounded(posStepconst * 2) - posStepconst));
+            // Kita terapkan jitter (noise) ke pergerakan kursor
+            QPointF pos(x1 + posDist(gen), y1 + posDist(gen));
+            
             pathPos.append(pos);
-            pathTimer.append(QRandomGenerator::global()->bounded(lowestTimer, highestTimer));
+            pathTimer.append(timeDist(gen));
+            
             x1 += dx;
             y1 += dy;
         }
@@ -649,14 +659,13 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
             }
         }
 
-        static QElapsedTimer paceTimer;
-        if (!paceTimer.isValid()) {
-            paceTimer.start();
+        if (!m_ctrlMouseMove.paceTimer.isValid()) {
+            m_ctrlMouseMove.paceTimer.start();
         }
 
-        if (paceTimer.elapsed() >= 8) { 
+        if (m_ctrlMouseMove.paceTimer.elapsed() >= 8) { 
             sendTouchMoveEvent(getTouchID(Qt::ExtraButton24), m_ctrlMouseMove.lastConverPos);
-            paceTimer.restart();
+            m_ctrlMouseMove.paceTimer.restart();
         }
     }
     

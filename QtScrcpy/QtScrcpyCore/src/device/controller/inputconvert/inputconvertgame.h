@@ -117,6 +117,7 @@ private:
         int timer = 0;
         bool smallEyes = false;
         int ignoreCount = 0;
+        QElapsedTimer paceTimer;
     } m_ctrlMouseMove;
 
     // for drag delay

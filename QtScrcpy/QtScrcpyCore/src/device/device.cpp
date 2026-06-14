@@ -228,16 +228,15 @@ void Device::initSignals()
                 int quota = 60;
                 while (controlSocket->bytesAvailable() && quota-- > 0) { 
                     QByteArray byteArray = controlSocket->peek(controlSocket->bytesAvailable());
-                    DeviceMsg *deviceMsg = new DeviceMsg(); 
-                    qint32 consume = deviceMsg->deserialize(byteArray);
+                    DeviceMsg deviceMsg; 
+                    qint32 consume = deviceMsg.deserialize(byteArray);
                     
                     if (0 >= consume) {
-                        delete deviceMsg; 
                         break;
                     }
                     
                     controlSocket->read(consume);
-                    m_controller->recvDeviceMsg(deviceMsg);
+                    m_controller->recvDeviceMsg(&deviceMsg);
                 }
             });
         if (m_params.closeScreen && m_params.display && m_controller) {

@@ -42,13 +42,14 @@ qint32 DeviceMsg::deserialize(QByteArray &byteArray)
     switch (m_data.type) {
     case DMT_GET_CLIPBOARD: {
         m_data.clipboardMsg.text = Q_NULLPTR;
-        quint16 clipboardLen = BufferUtil::read32(buf);
+        quint32 clipboardLen = BufferUtil::read32(buf); 
+        
         if (clipboardLen > len - 5) {
             ret = 0; // not available
             break;
         }
 
-        QByteArray text = buf.readAll();
+        QByteArray text = buf.read(clipboardLen);
         m_data.clipboardMsg.text = new char[text.length() + 1];
         memcpy(m_data.clipboardMsg.text, text.data(), text.length());
         m_data.clipboardMsg.text[text.length()] = '\0';

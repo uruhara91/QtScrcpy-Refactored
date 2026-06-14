@@ -1,62 +1,70 @@
 #include "videobuffer.h"
 #include "avframeconvert.h"
-#include <QThread>
 
 extern "C" {
 #include "libavutil/imgutils.h"
 }
 
 VideoBuffer::VideoBuffer(QObject *parent) : QObject(parent) {
-    m_latestFrame = av_frame_alloc();
+    for (int i = 0; i < 3; ++i) {
+        m_frames[i] = av_frame_alloc();
+    }
     connect(&m_fpsCounter, &FpsCounter::updateFPS, this, &VideoBuffer::updateFPS);
     m_fpsCounter.start();
 }
 
 VideoBuffer::~VideoBuffer() {
     m_fpsCounter.stop();
-    if (m_latestFrame) av_frame_free(&m_latestFrame);
+    for (int i = 0; i < 3; ++i) {
+        if (m_frames[i]) av_frame_free(&m_frames[i]);
+    }
 }
 
 void VideoBuffer::updateLatestFrame(const AVFrame* frame) {
-    while (m_spinLock.test_and_set(std::memory_order_acquire)) { QThread::yieldCurrentThread(); }
+    int writeIdx = m_writeIdx.load(std::memory_order_relaxed);
     
-    av_frame_unref(m_latestFrame);
-    av_frame_ref(m_latestFrame, frame);
-    m_frameGen++;
+    av_frame_unref(m_frames[writeIdx]);
+    av_frame_ref(m_frames[writeIdx], frame);
+    m_frameGen.fetch_add(1, std::memory_order_relaxed);
     
-    m_spinLock.clear(std::memory_order_release);
+    int idleIdx = m_idleIdx.load(std::memory_order_relaxed);
+    m_idleIdx.store(writeIdx, std::memory_order_relaxed);
+    m_writeIdx.store(idleIdx, std::memory_order_relaxed);
+    
+    m_hasNewFrame.store(true, std::memory_order_release);
     m_fpsCounter.addRenderedFrame();
 }
 
 void VideoBuffer::peekFrameInfo(int &width, int &height, int &format) {
-    while (m_spinLock.test_and_set(std::memory_order_acquire)) { QThread::yieldCurrentThread(); }
-    if (m_latestFrame && m_latestFrame->width > 0) {
-        width = m_latestFrame->width;
-        height = m_latestFrame->height;
-        format = m_latestFrame->format;
+    AVFrame* readFrame = m_frames[m_readIdx.load(std::memory_order_relaxed)];
+    if (readFrame && readFrame->width > 0) {
+        width = readFrame->width;
+        height = readFrame->height;
+        format = readFrame->format;
     } else {
         width = 0; height = 0; format = -1;
     }
-    m_spinLock.clear(std::memory_order_release);
 }
 
 void VideoBuffer::peekRenderedFrame(std::function<void(int, int, uint8_t*)> onFrame) {
     if (!onFrame) return;
 
-    AVFrame* clonedFrame = nullptr;
-    
-    while (m_spinLock.test_and_set(std::memory_order_acquire)) { QThread::yieldCurrentThread(); }
-    if (m_latestFrame && m_latestFrame->width > 0) {
-        clonedFrame = av_frame_clone(m_latestFrame);
+    if (m_hasNewFrame.exchange(false, std::memory_order_acquire)) {
+        int idleIdx = m_idleIdx.load(std::memory_order_relaxed);
+        int readIdx = m_readIdx.load(std::memory_order_relaxed);
+        m_idleIdx.store(readIdx, std::memory_order_relaxed);
+        m_readIdx.store(idleIdx, std::memory_order_relaxed);
     }
-    uint64_t currentGen = m_frameGen;
-    m_spinLock.clear(std::memory_order_release);
 
-    if (!clonedFrame) return;
+    AVFrame* renderFrame = m_frames[m_readIdx.load(std::memory_order_relaxed)];
+    
+    if (!renderFrame || renderFrame->width <= 0) return;
 
-    int width = clonedFrame->width;
-    int height = clonedFrame->height;
-    int format = clonedFrame->format;
+    int width = renderFrame->width;
+    int height = renderFrame->height;
+    int format = renderFrame->format;
+    uint64_t currentGen = m_frameGen.load(std::memory_order_relaxed);
+
     bool cacheValid = (currentGen == m_cacheGen) && m_cachedFrame && 
                       (width == m_cachedWidth) && (height == m_cachedHeight) && (format == m_cachedFormat);
 
@@ -75,7 +83,7 @@ void VideoBuffer::peekRenderedFrame(std::function<void(int, int, uint8_t*)> onFr
             convert.setDstFrameInfo(width, height, AV_PIX_FMT_RGB32);
             
             if (convert.init()) {
-                convert.convert(clonedFrame, rgbFrame);
+                convert.convert(renderFrame, rgbFrame); 
                 m_cacheGen = currentGen;
                 m_cachedWidth = width;
                 m_cachedHeight = height;
@@ -89,6 +97,4 @@ void VideoBuffer::peekRenderedFrame(std::function<void(int, int, uint8_t*)> onFr
     if (m_cachedFrame && !m_cachedFrame->empty()) {
         onFrame(m_cachedWidth, m_cachedHeight, m_cachedFrame->data());
     }
-    
-    av_frame_free(&clonedFrame);
 }

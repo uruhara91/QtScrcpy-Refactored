@@ -7,6 +7,7 @@
 #include <QRandomGenerator>
 #include <QElapsedTimer>
 #include <random>
+#include <cmath>
 
 #include "inputconvertgame.h"
 #include "../controller.h"
@@ -280,42 +281,87 @@ void InputConvertGame::getDelayQueue(const QPointF& start, const QPointF& end,
                                      const double& distanceStep, const double& posStepconst,
                                      quint32 lowestTimer, quint32 highestTimer,
                                      QVector<QPointF>& pathPos, QVector<quint32>& pathTimer) {
-    double x1 = start.x();
-    double y1 = start.y();
-    double x2 = end.x();
-    double y2 = end.y();
-
-    double dx = x2 - x1;
-    double dy = y2 - y1;
-    double e = (fabs(dx) > fabs(dy)) ? fabs(dx) : fabs(dy);
-    e /= distanceStep;
-    dx /= e;
-    dy /= e;
-
-    int steps = static_cast<int>(e);
     
+    double dx = end.x() - start.x();
+    double dy = end.y() - start.y();
+    double totalDistance = std::hypot(dx, dy); // Menggunakan hypot untuk jarak diagonal (lebih aman)
+
+    if (totalDistance < 0.0001) return;
+
+    // Kalkulasi jumlah step (frame sentuhan)
+    double e = (std::abs(dx) > std::abs(dy)) ? std::abs(dx) : std::abs(dy);
+    int steps = static_cast<int>(e / distanceStep);
+    if (steps < 2) steps = 2; // Minimal 2 step agar kurva bisa terbentuk
+
     pathPos.clear();
     pathTimer.clear();
+    pathPos.reserve(steps);
+    pathTimer.reserve(steps);
 
-    if (steps > 0) {
-        pathPos.reserve(steps);
-        pathTimer.reserve(steps);
+    // PRNG Super Ringan & Bebas Lock
+    thread_local std::mt19937 gen(std::random_device{}());
+    
+    // ---------------------------------------------------------
+    // 1. BEZIER CONTROL POINT (Menciptakan Lengkungan Jempol)
+    // ---------------------------------------------------------
+    // Mencari titik tengah antara start dan end
+    double midX = start.x() + dx / 2.0;
+    double midY = start.y() + dy / 2.0;
 
-        // OPTIMASI: Thread-local PRNG (sangat ringan dan lock-free)
-        thread_local std::mt19937 gen(std::random_device{}());
-        std::uniform_real_distribution<double> posDist(-posStepconst, posStepconst);
-        std::uniform_int_distribution<quint32> timeDist(lowestTimer, highestTimer);
+    // Vektor tegak lurus (perpendicular vector) dari garis lintasan
+    double perpX = -dy / totalDistance;
+    double perpY = dx / totalDistance;
 
-        for(int i = 1; i <= steps; i++) {
-            // Kita terapkan jitter (noise) ke pergerakan kursor
-            QPointF pos(x1 + posDist(gen), y1 + posDist(gen));
-            
-            pathPos.append(pos);
-            pathTimer.append(timeDist(gen));
-            
-            x1 += dx;
-            y1 += dy;
+    // Randomize kekuatan lengkungan (5% sampai 15% dari total jarak)
+    // Bisa melengkung ke kiri/atas (positif) atau kanan/bawah (negatif)
+    std::uniform_real_distribution<double> curveDist(-0.15, 0.15);
+    double curveFactor = curveDist(gen);
+    
+    // Jangan sampai curve 0 (garis lurus), berikan minimum lengkungan
+    if (std::abs(curveFactor) < 0.05) {
+        curveFactor = (curveFactor < 0) ? -0.05 : 0.05;
+    }
+    
+    double offsetLength = totalDistance * curveFactor;
+
+    // Posisi Control Point (P1) dari Bezier Curve
+    double cpX = midX + (perpX * offsetLength);
+    double cpY = midY + (perpY * offsetLength);
+
+    // ---------------------------------------------------------
+    // 2. GENERATE TITIK BEZIER & HUMAN JITTER
+    // ---------------------------------------------------------
+    std::uniform_real_distribution<double> jitterDist(-posStepconst, posStepconst);
+    std::uniform_int_distribution<quint32> baseTimeDist(lowestTimer, highestTimer);
+
+    for (int i = 1; i <= steps; i++) {
+        // Parameter t berjalan dari 0.0 ke 1.0
+        double t = static_cast<double>(i) / steps;
+
+        // Easing Function (Membuat gerak melambat di akhir)
+        // Mengubah t menjadi t_ease agar sentuhan lebih natural
+        double t_ease = std::sin(t * M_PI_2); 
+
+        // Rumus Quadratic Bezier: B(t) = (1-t)^2 P0 + 2(1-t)t P1 + t^2 P2
+        double u = 1.0 - t_ease;
+        double bx = (u * u * start.x()) + (2.0 * u * t_ease * cpX) + (t_ease * t_ease * end.x());
+        double by = (u * u * start.y()) + (2.0 * u * t_ease * cpY) + (t_ease * t_ease * end.y());
+
+        // Tambahkan micro-jitter (getaran alami urat tangan/layar HP)
+        QPointF finalPos(bx + jitterDist(gen), by + jitterDist(gen));
+        pathPos.append(finalPos);
+
+        // ---------------------------------------------------------
+        // 3. WAKTU SENTUHAN (Temporal Humanization)
+        // ---------------------------------------------------------
+        // Jari mendarat cepat, menggeser wajar, lalu melambat saat mau lepas (ngerem)
+        quint32 delay = baseTimeDist(gen);
+        if (i > steps * 0.8) {
+            // 20% langkah terakhir, jari melambat (delay bertambah)
+            delay += std::uniform_int_distribution<quint32>(1, 4)(gen);
         }
+        
+        pathTimer.append(delay);
     }
 }
 

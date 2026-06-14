@@ -628,11 +628,9 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
     if (m_processMouseMove) {
         QPointF distance_raw = QPointF(currentPos) - QPointF(centerPos);
         QPointF speedRatio = m_keyMap.getMouseMoveMap().data.mouseMove.speedRatio;
-        
-        if (qFuzzyIsNull(speedRatio.x())) speedRatio.setX(1.0);
-        if (qFuzzyIsNull(speedRatio.y())) speedRatio.setY(1.0);
-
         QPointF distance {distance_raw.x() / speedRatio.x(), distance_raw.y() / speedRatio.y()};
+        m_ctrlMouseMove.lastConverPos.setX(m_ctrlMouseMove.lastConverPos.x() + distance.x() / m_showSize.width());
+        m_ctrlMouseMove.lastConverPos.setY(m_ctrlMouseMove.lastConverPos.y() + distance.y() / m_showSize.height());
 
         mouseMoveStartTouch(from);
         startMouseMoveTimer();
@@ -666,11 +664,12 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
         if (m_ctrlMouseMove.paceTimer.elapsed() >= 8) { 
             sendTouchMoveEvent(getTouchID(Qt::ExtraButton24), m_ctrlMouseMove.lastConverPos);
             m_ctrlMouseMove.paceTimer.restart();
+            moveCursorTo(from, centerPos);
+            m_ctrlMouseMove.lastPos = QPointF(centerPos);
         }
+    } else {
+        moveCursorTo(from, centerPos);
     }
-    
-    moveCursorTo(from, centerPos);
-    m_ctrlMouseMove.lastPos = QPointF(centerPos);
 
     return true;
 }

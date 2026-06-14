@@ -82,18 +82,24 @@ QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent) : QOpenGLWidget(parent) {
 
     connect(this, &QYuvOpenGLWidget::requestUpdateTextures, this, 
         [this](int w, int h, int strideY, int strideU, int strideV){
+        
+        if (w < 16 || w > 8192 || h < 16 || h > 8192) {
+            m_textureSizeMismatch = false;
+            return; 
+        }
+
         if (isValid()) {
             makeCurrent();
             setFrameSize(QSize(w, h));
             initPBOs(h, strideY, strideU, strideV); 
             initTextures(w, h);
-            m_textureSizeMismatch = false;
+            m_textureSizeMismatch = false; 
             doneCurrent();
             update();
         } else {
             m_textureSizeMismatch = false; 
         }
-    });
+    }, Qt::QueuedConnection);
 }
 
 QYuvOpenGLWidget::~QYuvOpenGLWidget() {
@@ -156,7 +162,11 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
 
     FrameBuffer* targetFrame = nullptr;
     
-    std::shared_lock<std::shared_mutex> readLock(m_rwLock); 
+    std::shared_lock<std::shared_mutex> readLock(m_rwLock, std::try_to_lock); 
+    if (!readLock.owns_lock()) {
+        return;
+    }
+
     if (!m_pboSizeValid.load(std::memory_order_acquire)) return;
 
     for (int i = 0; i < PBO_COUNT; ++i) {

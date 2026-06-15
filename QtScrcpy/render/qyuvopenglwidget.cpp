@@ -272,8 +272,8 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
         return;
     }
 
-    std::shared_lock<std::shared_mutex> readLock(m_rwLock, std::try_to_lock);
-    if (!readLock.owns_lock()) {
+    std::unique_lock<std::mutex> pboLock(m_pboMutex, std::try_to_lock);
+    if (!pboLock.owns_lock()) {
         m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -288,7 +288,7 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
     const bool pboInvalid = !m_pboSizeValid.load(std::memory_order_acquire);
 
     if (sizeChanged || strideChanged || pboInvalid) {
-        readLock.unlock();
+        pboLock.unlock();
         bool expected = false;
         if (m_textureSizeMismatch.compare_exchange_strong(
                 expected, true,
@@ -303,6 +303,9 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
     FrameBuffer *target = acquireWritableFrame();
     if (!target) {
         m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        // All slots may still be waiting on GPU fences. Keep the GUI polling
+        // so a transient saturation cannot leave the mailbox permanently stuck.
+        scheduleUpdate();
         return;
     }
 
@@ -405,7 +408,7 @@ void QYuvOpenGLWidget::initTextures(int width, int height)
 bool QYuvOpenGLWidget::initPBOs(int height,
                                 int strideY, int strideU, int strideV)
 {
-    std::unique_lock<std::shared_mutex> writeLock(m_rwLock);
+    std::lock_guard<std::mutex> pboLock(m_pboMutex);
     deInitPBOsUnlocked();
 
     if (height <= 0 || strideY <= 0 || strideU <= 0 || strideV <= 0) {
@@ -466,7 +469,7 @@ void QYuvOpenGLWidget::deInitTextures()
 
 void QYuvOpenGLWidget::deInitPBOs()
 {
-    std::unique_lock<std::shared_mutex> writeLock(m_rwLock);
+    std::lock_guard<std::mutex> pboLock(m_pboMutex);
     deInitPBOsUnlocked();
 }
 
@@ -552,8 +555,6 @@ void QYuvOpenGLWidget::paintGL()
             height, (height + 1) / 2, (height + 1) / 2
         };
 
-        // Persistent coherent mappings make CPU writes visible, while this
-        // barrier explicitly orders them before the GPU transfer commands.
         glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
@@ -589,8 +590,6 @@ void QYuvOpenGLWidget::paintGL()
         m_program.release();
     }
 
-    // A frame may have arrived while this paint was running. Ensure it gets
-    // another coalesced render request without creating an event storm.
     for (const FrameBuffer &frame : m_frames) {
         if (frame.state.load(std::memory_order_acquire) == STATE_READY) {
             scheduleUpdate();

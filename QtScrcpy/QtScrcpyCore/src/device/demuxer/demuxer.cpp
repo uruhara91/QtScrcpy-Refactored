@@ -71,11 +71,6 @@ void Demuxer::installVideoSocket(VideoSocket *videoSocket)
     m_videoSocket = videoSocket;
 }
 
-void Demuxer::setFrameSize(const QSize &frameSize)
-{
-    m_frameSize = frameSize;
-}
-
 qint32 Demuxer::recvData(quint8 *buf, qint32 bufSize)
 {
     if (!buf || !m_videoSocket) return 0;
@@ -99,44 +94,12 @@ void Demuxer::stopDecode()
 
 void Demuxer::run()
 {
-    m_codecCtx = nullptr;
-    m_parser = nullptr;
-    AVPacket *packet = nullptr;
-
-    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-    if (!codec) goto runQuit;
-
-    m_codecCtx = avcodec_alloc_context3(codec);
-    if (!m_codecCtx) goto runQuit;
-
-    m_codecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    m_codecCtx->flags2 |= AV_CODEC_FLAG2_FAST;
-    m_codecCtx->width = m_frameSize.width();
-    m_codecCtx->height = m_frameSize.height();
-    m_codecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
-
-    m_parser = av_parser_init(AV_CODEC_ID_H264);
-    if (!m_parser) goto runQuit;
-    m_parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
-
-    packet = PacketPool::get().acquire();
-    if (!packet) goto runQuit;
-
     while (!m_isInterrupted.load(std::memory_order_acquire)) {
-        const bool ok = processNetworkPacket(packet);
-        av_packet_unref(packet);
-        if (!ok) break;
+        PacketHandle packet = acquirePacketHandle();
+        if (!packet || !processNetworkPacket(packet)) break;
     }
 
-runQuit:
     m_configBuffer.clear();
-
-    if (packet) PacketPool::get().release(packet);
-    if (m_parser) {
-        av_parser_close(m_parser);
-        m_parser = nullptr;
-    }
-    if (m_codecCtx) avcodec_free_context(&m_codecCtx);
 
     if (m_videoSocket) {
         m_videoSocket->close();
@@ -147,7 +110,7 @@ runQuit:
     emit onStreamStop();
 }
 
-bool Demuxer::processNetworkPacket(AVPacket *packet)
+bool Demuxer::processNetworkPacket(PacketHandle &packet)
 {
     if (!packet) return false;
 
@@ -167,7 +130,7 @@ bool Demuxer::processNetworkPacket(AVPacket *packet)
     }
 
     const int totalLength = static_cast<int>(configLength + payloadLength);
-    if (av_new_packet(packet, totalLength) != 0) return false;
+    if (av_new_packet(packet.get(), totalLength) != 0) return false;
 
     uint8_t *writePtr = packet->data;
     if (prependConfig) {
@@ -187,48 +150,11 @@ bool Demuxer::processNetworkPacket(AVPacket *packet)
 
     if (isConfig) {
         m_configBuffer.assign(packet->data, packet->data + packet->size);
-
-        AVPacket *clone = PacketPool::get().acquire();
-        if (!clone) return false;
-        if (av_packet_ref(clone, packet) < 0) {
-            PacketPool::get().release(clone);
-            return false;
-        }
-        emit getConfigFrame(clone);
+        emit getConfigFrame(packet.release());
         return true;
     }
 
     if (prependConfig) m_configBuffer.clear();
-    return parse(packet);
-}
-
-bool Demuxer::parse(AVPacket *packet)
-{
-    if (!packet || !m_parser || !m_codecCtx) return false;
-
-    quint8 *outData = nullptr;
-    int outLength = 0;
-    const int parseResult = av_parser_parse2(
-        m_parser,
-        m_codecCtx,
-        &outData,
-        &outLength,
-        packet->data,
-        packet->size,
-        packet->pts,
-        packet->dts,
-        -1);
-
-    if (parseResult < 0) return false;
-    if (m_parser->key_frame == 1) packet->flags |= AV_PKT_FLAG_KEY;
-
-    AVPacket *clone = PacketPool::get().acquire();
-    if (!clone) return false;
-    if (av_packet_ref(clone, packet) < 0) {
-        PacketPool::get().release(clone);
-        return false;
-    }
-
-    emit getFrame(clone);
+    emit getFrame(packet.release());
     return true;
 }

@@ -11,7 +11,7 @@
 #include <vector>
 
 extern "C" {
-#include "libavcodec/avcodec.h"
+#include "libavcodec/packet.h"
 #include "libavformat/avformat.h"
 }
 
@@ -107,7 +107,7 @@ public:
     static void deInit();
 
     void installVideoSocket(VideoSocket* videoSocket);
-    void setFrameSize(const QSize &frameSize);
+    void setFrameSize(const QSize &frameSize) { Q_UNUSED(frameSize); }
 
     [[nodiscard]] bool startDecode();
     void stopDecode();
@@ -121,17 +121,11 @@ protected:
     void run() override;
 
 private:
-    bool processNetworkPacket(AVPacket *packet);
-    bool parse(AVPacket *packet);
+    bool processNetworkPacket(PacketHandle &packet);
     qint32 recvData(quint8 *buf, qint32 bufSize);
 
 private:
     QPointer<VideoSocket> m_videoSocket;
-    QSize m_frameSize;
-
-    AVCodecContext *m_codecCtx = nullptr;
-    AVCodecParserContext *m_parser = nullptr;
-
     std::vector<uint8_t> m_configBuffer;
     std::atomic<bool> m_isInterrupted{false};
 };

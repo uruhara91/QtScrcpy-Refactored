@@ -10,17 +10,20 @@
 #include "receiver.h"
 #include "videosocket.h"
 
-Controller::Controller(std::function<qint64(const QByteArray&)> sendData, QString gameScript, QObject *parent)
-    : QObject(parent), m_sendData(std::move(sendData))
+Controller::Controller(std::function<qint64(const QByteArray&)> sendData,
+                       QString gameScript,
+                       QObject *parent)
+    : QObject(parent)
+    , m_sendData(std::move(sendData))
 {
     m_receiver = new Receiver(this);
     Q_ASSERT(m_receiver);
-    updateScript(gameScript);
+    updateScript(std::move(gameScript));
 
     m_networkTimer.setSingleShot(true);
-    m_networkTimer.setInterval(1);
     m_networkTimer.setTimerType(Qt::PreciseTimer);
-    connect(&m_networkTimer, &QTimer::timeout, this, &Controller::flushNetworkBuffer);
+    connect(&m_networkTimer, &QTimer::timeout,
+            this, &Controller::flushNetworkBuffer);
 }
 
 Controller::~Controller()
@@ -43,7 +46,8 @@ void Controller::scheduleNetworkFlush(int delayMs)
     const int safeDelay = qMax(0, delayMs);
 
     if (QThread::currentThread() == thread()) {
-        if (!m_networkTimer.isActive() || m_networkTimer.remainingTime() > safeDelay) {
+        if (!m_networkTimer.isActive() ||
+            m_networkTimer.remainingTime() > safeDelay) {
             m_networkTimer.start(safeDelay);
         }
         return;
@@ -51,7 +55,8 @@ void Controller::scheduleNetworkFlush(int delayMs)
 
     QMetaObject::invokeMethod(this, [this, safeDelay]() {
         if (m_stopping.load(std::memory_order_acquire)) return;
-        if (!m_networkTimer.isActive() || m_networkTimer.remainingTime() > safeDelay) {
+        if (!m_networkTimer.isActive() ||
+            m_networkTimer.remainingTime() > safeDelay) {
             m_networkTimer.start(safeDelay);
         }
     }, Qt::QueuedConnection);
@@ -62,44 +67,42 @@ void Controller::flushNetworkBuffer()
     QByteArray dataToSend;
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
-        if (m_sendBuffer.isEmpty()) return;
+        if (m_flushInProgress || m_sendBuffer.isEmpty()) return;
+        m_flushInProgress = true;
         dataToSend.swap(m_sendBuffer);
     }
 
-    qint64 written = -1;
-    if (m_sendData) {
-        written = m_sendData(dataToSend);
-    }
-
-    if (written >= dataToSend.size()) return;
-
+    qint64 written = m_sendData ? m_sendData(dataToSend) : -1;
     if (written < 0) written = 0;
-    QByteArray remaining = dataToSend.mid(static_cast<int>(written));
-    if (remaining.isEmpty()) return;
+    if (written > dataToSend.size()) written = dataToSend.size();
 
+    const QByteArray remaining = dataToSend.mid(static_cast<int>(written));
+    bool hasPending = false;
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
-        m_sendBuffer.prepend(remaining);
+        if (!remaining.isEmpty()) {
+            // Keep the unsent prefix ahead of input queued while write() ran.
+            m_sendBuffer.prepend(remaining);
+        }
+        m_flushInProgress = false;
+        hasPending = !m_sendBuffer.isEmpty();
     }
 
-    if (m_stopping.load(std::memory_order_acquire)) return;
+    if (!hasPending || m_stopping.load(std::memory_order_acquire)) return;
 
-    if (written > 0) {
-        scheduleNetworkFlush(1);
-    } else {
-        scheduleNetworkFlush(10);
-    }
+    // Successful progress retries immediately; a blocked socket gets a small
+    // backoff to avoid spinning while retaining strict message ordering.
+    scheduleNetworkFlush(written > 0 ? 0 : 10);
 }
 
 void Controller::recvDeviceMsg(DeviceMsg *deviceMsg)
 {
-    if (!m_receiver) return;
-    m_receiver->recvDeviceMsg(deviceMsg);
+    if (m_receiver) m_receiver->recvDeviceMsg(deviceMsg);
 }
 
 void Controller::test(QRect rc)
 {
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TOUCH);
+    auto *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TOUCH);
     controlMsg->setInjectTouchMsgData(
         static_cast<quint64>(POINTER_ID_MOUSE), AMOTION_EVENT_ACTION_DOWN,
         AMOTION_EVENT_BUTTON_PRIMARY, AMOTION_EVENT_BUTTON_PRIMARY, rc, 1.0f);
@@ -108,18 +111,20 @@ void Controller::test(QRect rc)
 
 void Controller::updateScript(QString gameScript)
 {
-    if (m_inputConvert) {
-        delete m_inputConvert;
-    }
+    delete m_inputConvert;
+    m_inputConvert = nullptr;
+
     if (!gameScript.isEmpty()) {
-        InputConvertGame *convertgame = new InputConvertGame(this);
-        convertgame->loadKeyMap(gameScript);
-        m_inputConvert = convertgame;
+        auto *convertGame = new InputConvertGame(this);
+        convertGame->loadKeyMap(gameScript);
+        m_inputConvert = convertGame;
     } else {
         m_inputConvert = new InputConvertNormal(this);
     }
+
     Q_ASSERT(m_inputConvert);
-    connect(m_inputConvert, &InputConvertBase::grabCursor, this, &Controller::grabCursor);
+    connect(m_inputConvert, &InputConvertBase::grabCursor,
+            this, &Controller::grabCursor);
 }
 
 bool Controller::isCurrentCustomKeymap()
@@ -129,7 +134,7 @@ bool Controller::isCurrentCustomKeymap()
 
 void Controller::postBackOrScreenOn(bool down)
 {
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_BACK_OR_SCREEN_ON);
+    auto *controlMsg = new ControlMsg(ControlMsg::CMT_BACK_OR_SCREEN_ON);
     controlMsg->setBackOrScreenOnData(down);
     postControlMsg(controlMsg);
 }
@@ -161,53 +166,57 @@ void Controller::requestDeviceClipboard()
 
 void Controller::getDeviceClipboard(bool cut)
 {
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_GET_CLIPBOARD);
-    ControlMsg::GetClipboardCopyKey copyKey = cut ? ControlMsg::GCCK_CUT : ControlMsg::GCCK_COPY;
-    controlMsg->setGetClipboardMsgData(copyKey);
+    auto *controlMsg = new ControlMsg(ControlMsg::CMT_GET_CLIPBOARD);
+    controlMsg->setGetClipboardMsgData(
+        cut ? ControlMsg::GCCK_CUT : ControlMsg::GCCK_COPY);
     postControlMsg(controlMsg);
 }
 
 void Controller::setDeviceClipboard(bool pause)
 {
-    QClipboard *board = QApplication::clipboard();
-    QString text = board->text();
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_SET_CLIPBOARD);
+    const QString text = QApplication::clipboard()->text();
+    auto *controlMsg = new ControlMsg(ControlMsg::CMT_SET_CLIPBOARD);
     controlMsg->setSetClipboardMsgData(text, pause);
     postControlMsg(controlMsg);
 }
 
 void Controller::clipboardPaste()
 {
-    QClipboard *board = QApplication::clipboard();
-    QString text = board->text();
+    QString text = QApplication::clipboard()->text();
     postTextInput(text);
 }
 
 void Controller::postTextInput(QString &text)
 {
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TEXT);
+    auto *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TEXT);
     controlMsg->setInjectTextMsgData(text);
     postControlMsg(controlMsg);
 }
 
 void Controller::setDisplayPower(bool on)
 {
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_SET_DISPLAY_POWER);
+    auto *controlMsg = new ControlMsg(ControlMsg::CMT_SET_DISPLAY_POWER);
     controlMsg->setDisplayPowerData(on);
     postControlMsg(controlMsg);
 }
 
-void Controller::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
+void Controller::mouseEvent(const QMouseEvent *from,
+                            const QSize &frameSize,
+                            const QSize &showSize)
 {
     if (m_inputConvert) m_inputConvert->mouseEvent(from, frameSize, showSize);
 }
 
-void Controller::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
+void Controller::wheelEvent(const QWheelEvent *from,
+                            const QSize &frameSize,
+                            const QSize &showSize)
 {
     if (m_inputConvert) m_inputConvert->wheelEvent(from, frameSize, showSize);
 }
 
-void Controller::keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize)
+void Controller::keyEvent(const QKeyEvent *from,
+                          const QSize &frameSize,
+                          const QSize &showSize)
 {
     if (m_inputConvert) m_inputConvert->keyEvent(from, frameSize, showSize);
 }
@@ -215,8 +224,7 @@ void Controller::keyEvent(const QKeyEvent *from, const QSize &frameSize, const Q
 bool Controller::event(QEvent *event)
 {
     if (event && static_cast<ControlMsg::Type>(event->type()) == ControlMsg::Control) {
-        ControlMsg *controlMsg = dynamic_cast<ControlMsg *>(event);
-        if (controlMsg) {
+        if (auto *controlMsg = dynamic_cast<ControlMsg *>(event)) {
             sendControl(controlMsg->serializeData());
         }
         return true;
@@ -230,23 +238,32 @@ bool Controller::sendControl(const QByteArray &buffer)
         return false;
     }
 
+    bool flushImmediately = false;
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
         if (m_stopping.load(std::memory_order_relaxed)) return false;
+
+        flushImmediately = m_sendBuffer.isEmpty() &&
+                           !m_flushInProgress &&
+                           QThread::currentThread() == thread();
         m_sendBuffer.append(buffer);
     }
 
-    scheduleNetworkFlush(1);
+    if (flushImmediately) {
+        flushNetworkBuffer();
+    } else {
+        scheduleNetworkFlush(0);
+    }
     return true;
 }
 
 void Controller::postKeyCodeClick(AndroidKeycode keycode)
 {
-    ControlMsg *controlEventDown = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
-    controlEventDown->setInjectKeycodeMsgData(AKEY_EVENT_ACTION_DOWN, keycode, 0, AMETA_NONE);
-    postControlMsg(controlEventDown);
+    auto *down = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
+    down->setInjectKeycodeMsgData(AKEY_EVENT_ACTION_DOWN, keycode, 0, AMETA_NONE);
+    postControlMsg(down);
 
-    ControlMsg *controlEventUp = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
-    controlEventUp->setInjectKeycodeMsgData(AKEY_EVENT_ACTION_UP, keycode, 0, AMETA_NONE);
-    postControlMsg(controlEventUp);
+    auto *up = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
+    up->setInjectKeycodeMsgData(AKEY_EVENT_ACTION_UP, keycode, 0, AMETA_NONE);
+    postControlMsg(up);
 }

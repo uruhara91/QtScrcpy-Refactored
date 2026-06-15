@@ -84,10 +84,13 @@ private:
     QMutex m_queueMutex;
     QWaitCondition m_queueCondition;
     QQueue<AVPacket *> m_packetQueue;
+    bool m_waitingForKeyFrame = false;
 
     std::atomic_bool m_codecOpen{false};
     std::atomic_bool m_stopping{false};
+    std::atomic_bool m_flushBeforeNextDecode{false};
     std::atomic<std::uint64_t> m_droppedPackets{0};
+    std::atomic<std::uint64_t> m_recoveryEvents{0};
     std::atomic<std::size_t> m_maximumQueueDepth{0};
 };
 

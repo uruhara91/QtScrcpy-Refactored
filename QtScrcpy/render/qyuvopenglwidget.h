@@ -7,7 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <shared_mutex>
+#include <mutex>
 #include <span>
 
 class QYuvOpenGLWidget : public QOpenGLWidget, protected QOpenGLFunctions_4_5_Core
@@ -84,7 +84,7 @@ private:
     std::atomic_flag m_updatePending = ATOMIC_FLAG_INIT;
 
     bool m_isInitialized = false;
-    mutable std::shared_mutex m_rwLock;
+    mutable std::mutex m_pboMutex;
     std::atomic<std::uint64_t> m_globalSequence{0};
 
     std::atomic<std::uint64_t> m_submittedFrames{0};

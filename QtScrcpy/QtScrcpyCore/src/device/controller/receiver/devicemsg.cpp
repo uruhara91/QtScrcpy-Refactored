@@ -1,73 +1,50 @@
-#include <QDebug>
-
-#include "bufferutil.h"
 #include "devicemsg.h"
 
-DeviceMsg::DeviceMsg(QObject *parent)
-    : QObject(parent)
+namespace {
+
+[[nodiscard]] quint32 readBigEndian32(const char *data) noexcept
 {
+    return (static_cast<quint32>(static_cast<unsigned char>(data[0])) << 24) |
+           (static_cast<quint32>(static_cast<unsigned char>(data[1])) << 16) |
+           (static_cast<quint32>(static_cast<unsigned char>(data[2])) << 8) |
+           static_cast<quint32>(static_cast<unsigned char>(data[3]));
 }
 
-DeviceMsg::~DeviceMsg()
+} // namespace
+
+DeviceMsg::DeviceMsgType DeviceMsg::type() const noexcept
 {
-    if (DMT_GET_CLIPBOARD == m_data.type &&
-        Q_NULLPTR != m_data.clipboardMsg.text) {
-        delete[] m_data.clipboardMsg.text;
-        m_data.clipboardMsg.text = Q_NULLPTR;
-    }
+    return m_type;
 }
 
-DeviceMsg::DeviceMsgType DeviceMsg::type()
+void DeviceMsg::getClipboardMsgData(QString &text) const
 {
-    return m_data.type;
-}
-
-void DeviceMsg::getClipboardMsgData(QString &text)
-{
-    text = QString::fromUtf8(m_data.clipboardMsg.text);
+    text = QString::fromUtf8(m_clipboardText);
 }
 
 qint32 DeviceMsg::deserialize(const QByteArray &byteArray)
 {
-    QBuffer buffer;
-    buffer.setData(byteArray);
-    if (!buffer.open(QBuffer::ReadOnly)) return -1;
+    constexpr qint32 headerSize = 5;
+    if (byteArray.size() < headerSize) return 0;
 
-    const qint64 length = buffer.size();
-    if (length < 5) return 0;
+    const auto candidateType = static_cast<DeviceMsgType>(
+        static_cast<unsigned char>(byteArray.at(0)));
+    if (candidateType != DMT_GET_CLIPBOARD) return -1;
 
-    char typeByte = 0;
-    if (!buffer.getChar(&typeByte)) return 0;
-    m_data.type = static_cast<DeviceMsgType>(typeByte);
+    const quint32 clipboardLength = readBigEndian32(byteArray.constData() + 1);
+    if (clipboardLength > DEVICE_MSG_TEXT_MAX_LENGTH) return -1;
 
-    qint32 consumed = 0;
-    switch (m_data.type) {
-    case DMT_GET_CLIPBOARD: {
-        const quint32 clipboardLength = BufferUtil::read32(buffer);
-        if (clipboardLength > DEVICE_MSG_TEXT_MAX_LENGTH ||
-            clipboardLength > static_cast<quint64>(length - 5)) {
-            consumed = 0;
-            break;
-        }
-
-        const QByteArray text = buffer.read(clipboardLength);
-        if (text.size() != static_cast<int>(clipboardLength)) {
-            consumed = 0;
-            break;
-        }
-
-        delete[] m_data.clipboardMsg.text;
-        m_data.clipboardMsg.text = new char[text.size() + 1];
-        memcpy(m_data.clipboardMsg.text, text.constData(), text.size());
-        m_data.clipboardMsg.text[text.size()] = '\0';
-        consumed = 5 + static_cast<qint32>(clipboardLength);
-        break;
-    }
-    default:
-        qWarning("Unsupported device msg type: %d", static_cast<int>(m_data.type));
-        consumed = -1;
-        break;
+    const quint64 totalSize64 = static_cast<quint64>(headerSize) + clipboardLength;
+    if (totalSize64 > static_cast<quint64>(std::numeric_limits<qint32>::max())) {
+        return -1;
     }
 
-    return consumed;
+    const qint32 totalSize = static_cast<qint32>(totalSize64);
+    if (byteArray.size() < totalSize) return 0;
+
+    // Commit only after the complete payload has arrived.
+    m_type = candidateType;
+    m_clipboardText = QByteArray(byteArray.constData() + headerSize,
+                                 static_cast<qsizetype>(clipboardLength));
+    return totalSize;
 }

@@ -62,7 +62,6 @@ public:
 
 signals:
     void updateFPS(quint32 fps);
-    void newFrame();
 
 protected:
     void run() override;

@@ -14,13 +14,13 @@
 
 #include "QtScrcpyCore.h"
 #include "decoder/decoder.h"
+#include "decoder/videobuffer.h"
 
 class QMouseEvent;
 class QWheelEvent;
 class QKeyEvent;
 class Recorder;
 class Server;
-class VideoBuffer;
 class FileHandler;
 class Demuxer;
 class VideoForm;
@@ -46,6 +46,14 @@ public:
     void deRegisterDeviceObserver(DeviceObserver* observer) override;
     void registerFrameSink(FrameSink* sink) override;
     void deRegisterFrameSink(FrameSink* sink) override;
+    void setFpsCounterEnabled(bool enabled) override
+    {
+        if (m_decoder) {
+            if (VideoBuffer *buffer = m_decoder->videoBuffer()) {
+                buffer->setFpsCounterEnabled(enabled);
+            }
+        }
+    }
 
     [[nodiscard]] bool connectDevice() override;
     void disconnectDevice() override;

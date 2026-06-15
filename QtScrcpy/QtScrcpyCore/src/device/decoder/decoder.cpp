@@ -4,6 +4,7 @@
 
 #include <QDebug>
 #include <QMutexLocker>
+#include <QtGlobal>
 #include <utility>
 
 extern "C" {
@@ -33,6 +34,22 @@ Decoder::~Decoder()
     close();
 }
 
+int Decoder::selectDecoderThreadCount() const
+{
+    bool configured = false;
+    const int requested = qEnvironmentVariableIntValue(
+        "QTSCRCPY_DECODER_THREADS", &configured);
+
+    if (configured) {
+        // 0 delegates thread selection to FFmpeg. Positive values are bounded
+        // to avoid accidental oversubscription from malformed environments.
+        return requested == 0 ? 0 : qBound(1, requested, 32);
+    }
+
+    const int logicalCpus = QThread::idealThreadCount();
+    return logicalCpus > 1 ? logicalCpus - 1 : 1;
+}
+
 bool Decoder::open()
 {
     if (isRunning() || m_codecOpen.load(std::memory_order_acquire)) return false;
@@ -47,7 +64,7 @@ bool Decoder::open()
     m_codecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
     m_codecCtx->flags2 |= AV_CODEC_FLAG2_FAST;
     m_codecCtx->thread_type = FF_THREAD_SLICE;
-    m_codecCtx->thread_count = qMax(1, QThread::idealThreadCount() - 1);
+    m_codecCtx->thread_count = selectDecoderThreadCount();
     m_codecCtx->skip_loop_filter = AVDISCARD_NONREF;
 
     if (avcodec_open2(m_codecCtx.get(), codec, nullptr) < 0) {
@@ -62,6 +79,10 @@ bool Decoder::open()
     }
 
     clearPacketQueue();
+    m_queueWaitStats.reset();
+    m_workerServiceStats.reset();
+    m_frameIntervalStats.reset();
+    m_lastFrameTime = {};
     m_droppedPackets.store(0, std::memory_order_relaxed);
     m_recoveryEvents.store(0, std::memory_order_relaxed);
     m_maximumQueueDepth.store(0, std::memory_order_relaxed);
@@ -77,6 +98,8 @@ bool Decoder::open()
 
 void Decoder::close()
 {
+    const bool wasOpen = m_codecOpen.load(std::memory_order_acquire) || isRunning();
+
     m_stopping.store(true, std::memory_order_release);
     {
         QMutexLocker locker(&m_queueMutex);
@@ -86,21 +109,14 @@ void Decoder::close()
     if (isRunning()) wait();
     clearPacketQueue();
 
+    if (wasOpen) logTimingStats();
+
     m_codecOpen.store(false, std::memory_order_release);
     m_codecCtx.reset();
 
     if (m_recvFrame) {
         av_frame_free(&m_recvFrame);
         m_recvFrame = nullptr;
-    }
-
-    const auto dropped = m_droppedPackets.load(std::memory_order_relaxed);
-    const auto recoveries = m_recoveryEvents.load(std::memory_order_relaxed);
-    const auto maxDepth = m_maximumQueueDepth.load(std::memory_order_relaxed);
-    if (dropped > 0 || recoveries > 0) {
-        qInfo() << "Decoder stopped. Dropped packets:" << dropped
-                << "recovery events:" << recoveries
-                << "maximum queue depth:" << maxDepth;
     }
 }
 
@@ -111,7 +127,7 @@ bool Decoder::enqueuePacket(PacketHandle packet)
         return false;
     }
 
-    QQueue<AVPacket *> discarded;
+    QQueue<QueuedPacket> discarded;
     bool accepted = false;
     bool recoveryTriggered = false;
     std::size_t depth = 0;
@@ -124,29 +140,30 @@ bool Decoder::enqueuePacket(PacketHandle packet)
         }
 
         const bool isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+        const auto enqueueCurrentPacket = [&]() {
+            m_packetQueue.enqueue(QueuedPacket{packet.release(), Clock::now()});
+            accepted = true;
+        };
 
         if (m_waitingForKeyFrame) {
             if (isKeyFrame) {
                 discarded.swap(m_packetQueue);
-                m_packetQueue.enqueue(packet.release());
+                enqueueCurrentPacket();
                 m_waitingForKeyFrame = false;
                 m_flushBeforeNextDecode.store(true, std::memory_order_release);
-                accepted = true;
             }
         } else if (m_packetQueue.size() >= MAX_PACKET_QUEUE_SIZE) {
             discarded.swap(m_packetQueue);
             recoveryTriggered = true;
 
             if (isKeyFrame) {
-                m_packetQueue.enqueue(packet.release());
+                enqueueCurrentPacket();
                 m_flushBeforeNextDecode.store(true, std::memory_order_release);
-                accepted = true;
             } else {
                 m_waitingForKeyFrame = true;
             }
         } else {
-            m_packetQueue.enqueue(packet.release());
-            accepted = true;
+            enqueueCurrentPacket();
         }
 
         if (accepted) {
@@ -156,7 +173,7 @@ bool Decoder::enqueuePacket(PacketHandle packet)
     }
 
     while (!discarded.isEmpty()) {
-        PacketPool::get().release(discarded.dequeue());
+        PacketPool::get().release(discarded.dequeue().packet);
         m_droppedPackets.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -173,15 +190,12 @@ bool Decoder::enqueuePacket(PacketHandle packet)
     return true;
 }
 
-void Decoder::onDecodeFrame(AVPacket *packet)
-{
-    (void)enqueuePacket(PacketHandle(packet));
-}
-
 void Decoder::run()
 {
     while (!m_stopping.load(std::memory_order_acquire)) {
-        PacketHandle packet;
+        QueuedPacket queued;
+        bool hasPacket = false;
+
         {
             QMutexLocker locker(&m_queueMutex);
             while (m_packetQueue.isEmpty() &&
@@ -191,18 +205,25 @@ void Decoder::run()
 
             if (m_stopping.load(std::memory_order_acquire)) break;
             if (!m_packetQueue.isEmpty()) {
-                packet.reset(m_packetQueue.dequeue());
+                queued = m_packetQueue.dequeue();
+                hasPacket = true;
             }
         }
 
-        if (!packet) continue;
+        if (!hasPacket || !queued.packet) continue;
 
+        const auto dequeuedAt = Clock::now();
+        m_queueWaitStats.add(dequeuedAt - queued.enqueuedAt);
+
+        PacketHandle packet(queued.packet);
         if (m_flushBeforeNextDecode.exchange(false, std::memory_order_acq_rel)) {
             if (m_codecCtx) avcodec_flush_buffers(m_codecCtx.get());
             if (m_recvFrame) av_frame_unref(m_recvFrame);
         }
 
+        const auto serviceStartedAt = Clock::now();
         decodePacket(std::move(packet));
+        m_workerServiceStats.add(Clock::now() - serviceStartedAt);
     }
 }
 
@@ -234,6 +255,12 @@ void Decoder::drainDecodedFrames()
         const int receiveResult = avcodec_receive_frame(m_codecCtx.get(), m_recvFrame);
         if (receiveResult == AVERROR(EAGAIN) || receiveResult == AVERROR_EOF) break;
         if (receiveResult < 0) break;
+
+        const auto frameTime = Clock::now();
+        if (m_lastFrameTime != Clock::time_point{}) {
+            m_frameIntervalStats.add(frameTime - m_lastFrameTime);
+        }
+        m_lastFrameTime = frameTime;
 
         if (m_vb) m_vb->updateLatestFrame(m_recvFrame);
 
@@ -268,7 +295,7 @@ void Decoder::drainDecodedFrames()
 
 void Decoder::clearPacketQueue()
 {
-    QQueue<AVPacket *> pending;
+    QQueue<QueuedPacket> pending;
     {
         QMutexLocker locker(&m_queueMutex);
         pending.swap(m_packetQueue);
@@ -276,7 +303,7 @@ void Decoder::clearPacketQueue()
     }
 
     while (!pending.isEmpty()) {
-        PacketPool::get().release(pending.dequeue());
+        PacketPool::get().release(pending.dequeue().packet);
     }
 }
 
@@ -289,6 +316,34 @@ void Decoder::updateMaximumQueueDepth(std::size_t depth)
                std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
+}
+
+void Decoder::logTimingStats() const
+{
+    const auto queue = m_queueWaitStats.summary();
+    const auto service = m_workerServiceStats.summary();
+    const auto interval = m_frameIntervalStats.summary();
+    const auto dropped = m_droppedPackets.load(std::memory_order_relaxed);
+    const auto recoveries = m_recoveryEvents.load(std::memory_order_relaxed);
+    const auto maxDepth = m_maximumQueueDepth.load(std::memory_order_relaxed);
+
+    const auto logWindow = [](const char *label, const LatencySummary &summary) {
+        if (summary.samples == 0) return;
+        qInfo().nospace()
+            << label
+            << " samples=" << summary.samples
+            << " p50=" << summary.p50Us / 1000.0 << "ms"
+            << " p95=" << summary.p95Us / 1000.0 << "ms"
+            << " p99=" << summary.p99Us / 1000.0 << "ms"
+            << " max=" << summary.maxUs / 1000.0 << "ms";
+    };
+
+    qInfo() << "Decoder queue stats - max depth:" << maxDepth
+            << "dropped:" << dropped
+            << "recovery events:" << recoveries;
+    logWindow("Decoder queue wait", queue);
+    logWindow("Decoder worker service", service);
+    logWindow("Decoded frame interval", interval);
 }
 
 void Decoder::peekFrame(std::function<void(int, int, uint8_t *)> onFrame)

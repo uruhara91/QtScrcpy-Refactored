@@ -50,13 +50,10 @@ public:
     void collapsePanel();
     void setDisplayPower(bool on);
 
-    // for input convert
     void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize);
     void wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize);
     void keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize);
 
-    // turn the screen on if it was off, press BACK otherwise
-    // If the screen is off, it is turned on only on down
     void postBackOrScreenOn(bool down);
     void requestDeviceClipboard();
     void getDeviceClipboard(bool cut = false);
@@ -75,7 +72,7 @@ protected:
 
 private:
     void postKeyCodeClick(AndroidKeycode keycode);
-    void scheduleNetworkFlush();
+    void scheduleNetworkFlush(int delayMs = 1);
 
 private:
     QPointer<Receiver> m_receiver;

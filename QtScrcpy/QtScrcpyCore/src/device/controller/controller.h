@@ -26,8 +26,10 @@ class Controller : public QObject
 {
     Q_OBJECT
 public:
-    Controller(std::function<qint64(const QByteArray&)> sendData, QString gameScript = "", QObject *parent = Q_NULLPTR);
-    virtual ~Controller();
+    Controller(std::function<qint64(const QByteArray&)> sendData,
+               QString gameScript = "",
+               QObject *parent = Q_NULLPTR);
+    ~Controller() override;
 
     void postControlMsg(ControlMsg *controlMsg);
     void recvDeviceMsg(DeviceMsg *deviceMsg);
@@ -72,7 +74,7 @@ protected:
 
 private:
     void postKeyCodeClick(AndroidKeycode keycode);
-    void scheduleNetworkFlush(int delayMs = 1);
+    void scheduleNetworkFlush(int delayMs = 0);
 
 private:
     QPointer<Receiver> m_receiver;
@@ -82,6 +84,7 @@ private:
     QTimer m_networkTimer;
     QByteArray m_sendBuffer;
     std::mutex m_bufferMutex;
+    bool m_flushInProgress = false;
     std::atomic_bool m_stopping{false};
 };
 

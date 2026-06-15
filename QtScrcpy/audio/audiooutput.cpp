@@ -41,8 +41,9 @@ extern "C" {
 namespace {
 
 constexpr quint32 CODEC_ID_OPUS = 0x6f707573U;
-constexpr quint64 PACKET_FLAG_CONFIG = quint64{1} << 63;
-constexpr quint64 PACKET_FLAG_KEY_FRAME = quint64{1} << 62;
+constexpr quint64 PACKET_FLAG_SESSION = quint64{1} << 63;
+constexpr quint64 PACKET_FLAG_CONFIG = quint64{1} << 62;
+constexpr quint64 PACKET_FLAG_KEY_FRAME = quint64{1} << 61;
 constexpr quint64 PACKET_PTS_MASK = PACKET_FLAG_KEY_FRAME - 1;
 constexpr int PACKET_HEADER_SIZE = 12;
 constexpr quint32 MAX_AUDIO_PACKET_SIZE = 1U << 20;
@@ -51,8 +52,8 @@ constexpr int CHANNELS = 2;
 constexpr int BYTES_PER_SAMPLE = 2;
 constexpr int BYTES_PER_FRAME = CHANNELS * BYTES_PER_SAMPLE;
 constexpr int BYTES_PER_MILLISECOND = SAMPLE_RATE * BYTES_PER_FRAME / 1000;
-constexpr int CONNECT_TIMEOUT_MS = 6000;
-constexpr int CONNECT_RETRY_MS = 75;
+constexpr int CONNECT_TIMEOUT_MS = 8000;
+constexpr int CONNECT_RETRY_MS = 100;
 constexpr int DISCONNECT_DIAGNOSTIC_DELAY_MS = 100;
 
 [[nodiscard]] int boundedEnvironmentValue(const char *name,
@@ -63,6 +64,12 @@ constexpr int DISCONNECT_DIAGNOSTIC_DELAY_MS = 100;
     bool ok = false;
     const int value = qEnvironmentVariableIntValue(name, &ok);
     return ok ? qBound(minimum, value, maximum) : fallback;
+}
+
+[[nodiscard]] bool environmentEnabled(const char *name, bool fallback)
+{
+    if (!qEnvironmentVariableIsSet(name)) return fallback;
+    return qEnvironmentVariableIntValue(name) != 0;
 }
 
 [[nodiscard]] quint32 read32be(const char *data) noexcept
@@ -209,6 +216,8 @@ struct ScrcpyAudioWorker::Impl
     bool announcedStarted = false;
     bool stopping = false;
     bool disconnectDiagnosticPending = false;
+    bool protocolStarted = false;
+    int connectionAttempts = 0;
     quint64 latencyDrops = 0;
     quint64 packetsReceived = 0;
     quint64 framesDecoded = 0;
@@ -276,6 +285,30 @@ struct ScrcpyAudioWorker::Impl
         framesDecoded = 0;
         pcmBytesQueued = 0;
         pcmBytesWritten = 0;
+        connectionAttempts = 0;
+    }
+
+    void prepareAndroid11Audio()
+    {
+        QString sdkText;
+        if (!runAdb({QStringLiteral("shell"), QStringLiteral("getprop"),
+                     QStringLiteral("ro.build.version.sdk")},
+                    3000, &sdkText, false)) {
+            return;
+        }
+
+        bool ok = false;
+        const int sdk = sdkText.toInt(&ok);
+        if (!ok || sdk != 30) return;
+
+        qInfo() << "[Audio] Android 11 detected; the screen must be unlocked during audio startup";
+        if (!environmentEnabled("QTSCRCPY_AUDIO_WAKE_ANDROID11", true)) return;
+
+        // The main mirroring session may have switched the display off. Wake it
+        // before scrcpy starts its temporary foreground-activity workaround.
+        (void)runAdb({QStringLiteral("shell"), QStringLiteral("input"),
+                      QStringLiteral("keyevent"), QStringLiteral("224")},
+                     3000, nullptr, false);
     }
 
     void start(const QString &newSerial,
@@ -303,7 +336,6 @@ struct ScrcpyAudioWorker::Impl
         adbPath = QString::fromLocal8Bit(qgetenv("QTSCRCPY_ADB_PATH"));
         if (adbPath.isEmpty()) adbPath = QStringLiteral("adb");
 
-        // scrcpy parses scid as a signed Java int in hexadecimal.
         scid = QRandomGenerator::global()->generate() & 0x7fffffffU;
         const QString scidHex = QStringLiteral("%1").arg(
             scid, 8, 16, QLatin1Char('0'));
@@ -315,7 +347,10 @@ struct ScrcpyAudioWorker::Impl
         stopping = false;
         announcedStarted = false;
         disconnectDiagnosticPending = false;
+        protocolStarted = false;
         resetStatistics();
+
+        prepareAndroid11Audio();
 
         if (!runAdb({QStringLiteral("push"), serverPath, remoteServerPath}, 15000)) {
             fail(QStringLiteral("Audio: failed to push scrcpy-server"));
@@ -368,7 +403,7 @@ struct ScrcpyAudioWorker::Impl
         params << QStringLiteral("CLASSPATH=%1").arg(remoteServerPath);
         params << "app_process" << "/" << "com.genymobile.scrcpy.Server";
         params << serverVersion;
-        params << "log_level=info";
+        params << "log_level=debug";
         params << QStringLiteral("scid=%1").arg(scidHex);
         params << "tunnel_forward=true";
         params << "video=false";
@@ -380,7 +415,8 @@ struct ScrcpyAudioWorker::Impl
         params << "send_device_meta=false";
         params << "send_frame_meta=true";
         params << "send_dummy_byte=true";
-        params << "send_codec_meta=true";
+        params << "send_stream_meta=true";
+        params << "power_on=true";
         params << "cleanup=true";
 
         serverProcess->start(adbPath, params);
@@ -409,22 +445,36 @@ struct ScrcpyAudioWorker::Impl
         socket->setReadBufferSize(128 * 1024);
 
         QObject::connect(socket, &QTcpSocket::connected, q, [this]() {
-            if (connectTimer) connectTimer->stop();
+            ++connectionAttempts;
             rxBuffer.clear();
             rxOffset = 0;
             inputState = InputState::DummyByte;
-            qInfo() << "[Audio] Connected to scrcpy audio socket";
+            protocolStarted = false;
+            qInfo() << "[Audio] ADB tunnel connected, attempt:" << connectionAttempts;
         });
         QObject::connect(socket, &QTcpSocket::readyRead, q, [this]() {
             receiveAudioData();
         });
         QObject::connect(socket, &QTcpSocket::disconnected, q, [this]() {
-            // A short-lived failed stream may write codec id 0/1 and close in
-            // the same event-loop iteration. Drain buffered bytes first so the
-            // precise device-side failure is not hidden by a generic EOF.
             receiveAudioData();
-            if (stopping || !active || disconnectDiagnosticPending) return;
+            if (stopping || !active) return;
 
+            // adb forward listens locally before the Android abstract socket is
+            // ready. The first TCP connection may therefore succeed locally and
+            // then close without a single protocol byte. Retry that startup race.
+            if (!protocolStarted && inputState == InputState::DummyByte &&
+                connectElapsed.isValid() &&
+                connectElapsed.elapsed() < CONNECT_TIMEOUT_MS &&
+                serverProcess &&
+                serverProcess->state() != QProcess::NotRunning) {
+                qInfo() << "[Audio] Android socket not ready yet; retrying";
+                QTimer::singleShot(CONNECT_RETRY_MS, q, [this]() {
+                    attemptConnect();
+                });
+                return;
+            }
+
+            if (disconnectDiagnosticPending) return;
             disconnectDiagnosticPending = true;
             QTimer::singleShot(DISCONNECT_DIAGNOSTIC_DELAY_MS, q, [this]() {
                 disconnectDiagnosticPending = false;
@@ -443,14 +493,15 @@ struct ScrcpyAudioWorker::Impl
 
     void attemptConnect()
     {
-        if (!active || stopping || !socket) return;
+        if (!active || stopping || !socket || protocolStarted) return;
         if (socket->state() == QAbstractSocket::ConnectedState ||
             socket->state() == QAbstractSocket::ConnectingState) {
             return;
         }
 
-        if (connectElapsed.elapsed() >= CONNECT_TIMEOUT_MS) {
-            fail(QStringLiteral("Audio: timed out connecting to scrcpy-server"));
+        if (connectElapsed.isValid() &&
+            connectElapsed.elapsed() >= CONNECT_TIMEOUT_MS) {
+            fail(QStringLiteral("Audio: timed out waiting for the Android audio socket"));
             return;
         }
 
@@ -487,6 +538,9 @@ struct ScrcpyAudioWorker::Impl
                 if (available < 1) break;
                 ++rxOffset;
                 inputState = InputState::CodecId;
+                protocolStarted = true;
+                if (connectTimer) connectTimer->stop();
+                qInfo() << "[Audio] Android audio socket handshake completed";
                 continue;
             }
 
@@ -497,7 +551,7 @@ struct ScrcpyAudioWorker::Impl
 
                 if (codecId == 0) {
                     fail(QStringLiteral(
-                        "Audio: capture was disabled by the device. On Android 11, unlock the screen before starting audio; some ROMs may block output capture."));
+                        "Audio: capture was disabled by the device. This is Android 11; keep the phone unlocked while pressing Start Audio."));
                     return;
                 }
                 if (codecId == 1) {
@@ -522,6 +576,11 @@ struct ScrcpyAudioWorker::Impl
 
             if (available < PACKET_HEADER_SIZE) break;
             const quint64 ptsFlags = read64be(data);
+            if ((ptsFlags & PACKET_FLAG_SESSION) != 0) {
+                fail(QStringLiteral("Audio: unexpected session packet in audio stream"));
+                return;
+            }
+
             const quint32 payloadSize = read32be(data + 8);
             if (payloadSize == 0 || payloadSize > MAX_AUDIO_PACKET_SIZE) {
                 fail(QStringLiteral("Audio: malformed packet size %1")
@@ -891,6 +950,7 @@ struct ScrcpyAudioWorker::Impl
         stopping = true;
         active = false;
         disconnectDiagnosticPending = false;
+        protocolStarted = false;
 
         if (connectTimer) {
             connectTimer->stop();

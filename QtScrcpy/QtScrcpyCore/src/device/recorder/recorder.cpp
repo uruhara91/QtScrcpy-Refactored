@@ -8,15 +8,16 @@
 
 static const AVRational SCRCPY_TIME_BASE = { 1, 1000000 }; // timestamps in us
 
-Recorder::Recorder(const QString &fileName, QObject *parent) 
-    : QThread(parent), m_fileName(fileName), m_format(guessRecordFormat(fileName)) 
+Recorder::Recorder(const QString &fileName, QObject *parent)
+    : QThread(parent), m_fileName(fileName), m_format(guessRecordFormat(fileName))
 {}
 
-Recorder::~Recorder() 
+Recorder::~Recorder()
 {
     stopRecorder();
     wait();
     queueClear();
+    close();
 }
 
 void Recorder::packetDelete(AVPacket *packet)
@@ -46,7 +47,6 @@ void Recorder::setFormat(Recorder::RecorderFormat format)
 
 bool Recorder::open()
 {
-    // codec
     const AVCodec* inputCodec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!inputCodec) {
         qCritical("H.264 decoder not found");
@@ -54,7 +54,11 @@ bool Recorder::open()
     }
 
     QString formatName = recorderGetFormatName(m_format);
-    Q_ASSERT(!formatName.isEmpty());
+    if (formatName.isEmpty()) {
+        qCritical("Invalid recorder format");
+        return false;
+    }
+
     const AVOutputFormat *format = findMuxer(formatName.toUtf8());
     if (!format) {
         qCritical("Could not find muxer");
@@ -67,12 +71,7 @@ bool Recorder::open()
         return false;
     }
 
-    // contrary to the deprecated API (av_oformat_next()), av_muxer_iterate()
-    // returns (on purpose) a pointer-to-const, but AVFormatContext.oformat
-    // still expects a pointer-to-non-const (it has not be updated accordingly)
-    // <https://github.com/FFmpeg/FFmpeg/commit/0694d8702421e7aff1340038559c438b61bb30dd>
-
-    m_formatCtx->oformat = (AVOutputFormat *)format;
+    m_formatCtx->oformat = const_cast<AVOutputFormat *>(format);
 
     QString comment = "Recorded by QtScrcpy " + QCoreApplication::applicationVersion();
     av_dict_set(&m_formatCtx->metadata, "comment", comment.toUtf8(), 0);
@@ -98,50 +97,56 @@ bool Recorder::open()
     outStream->codec->height = m_declaredFrameSize.height();
 #endif
 
-    int ret = avio_open(&m_formatCtx->pb, m_fileName.toUtf8().toStdString().c_str(), AVIO_FLAG_WRITE);
+    int ret = avio_open(&m_formatCtx->pb, m_fileName.toUtf8().constData(), AVIO_FLAG_WRITE);
     if (ret < 0) {
         char errorbuf[255] = { 0 };
         av_strerror(ret, errorbuf, 254);
-        qCritical() << QString("Failed to open output file: %1 %2").arg(errorbuf).arg(m_fileName).toUtf8().toStdString().c_str();
-        // ostream will be cleaned up during context cleaning
+        qCritical() << QString("Failed to open output file: %1 %2").arg(errorbuf).arg(m_fileName);
         avformat_free_context(m_formatCtx);
         m_formatCtx = Q_NULLPTR;
         return false;
     }
 
+    m_headerWritten = false;
+    m_stopped.store(false, std::memory_order_release);
+    m_failed.store(false, std::memory_order_release);
     return true;
 }
 
 void Recorder::close()
 {
-    if (Q_NULLPTR != m_formatCtx) {
-        if (m_headerWritten) {
-            int ret = av_write_trailer(m_formatCtx);
-            if (ret < 0) {
-                qCritical() << QString("Failed to write trailer to %1").arg(m_fileName).toUtf8().toStdString().c_str();
-                m_failed = true;
-            } else {
-                qInfo() << QString("success record %1").arg(m_fileName).toStdString().c_str();
-            }
+    if (Q_NULLPTR == m_formatCtx) return;
+
+    if (m_headerWritten) {
+        int ret = av_write_trailer(m_formatCtx);
+        if (ret < 0) {
+            qCritical() << QString("Failed to write trailer to %1").arg(m_fileName);
+            m_failed.store(true, std::memory_order_release);
         } else {
-            // the recorded file is empty
-            m_failed = true;
+            qInfo() << QString("success record %1").arg(m_fileName);
         }
-        avio_close(m_formatCtx->pb);
-        avformat_free_context(m_formatCtx);
-        m_formatCtx = Q_NULLPTR;
+    } else {
+        m_failed.store(true, std::memory_order_release);
     }
+
+    if (m_formatCtx->pb) {
+        avio_closep(&m_formatCtx->pb);
+    }
+    avformat_free_context(m_formatCtx);
+    m_formatCtx = Q_NULLPTR;
+    m_headerWritten = false;
 }
 
 bool Recorder::write(AVPacket *packet)
 {
+    if (!packet || !m_formatCtx) return false;
+
     if (!m_headerWritten) {
         if (packet->pts != AV_NOPTS_VALUE) {
             qCritical("The first packet is not a config packet");
             return false;
         }
-        bool ok = recorderWriteHeader(packet);
-        if (!ok) {
+        if (!recorderWriteHeader(packet)) {
             return false;
         }
         m_headerWritten = true;
@@ -149,7 +154,6 @@ bool Recorder::write(AVPacket *packet)
     }
 
     if (packet->pts == AV_NOPTS_VALUE) {
-        // ignore config packets
         return true;
     }
 
@@ -169,7 +173,6 @@ const AVOutputFormat *Recorder::findMuxer(const char *name)
 #else
         outFormat = av_oformat_next(outFormat);
 #endif
-        // until null or with name "name"
     } while (outFormat && strcmp(outFormat->name, name));
     return outFormat;
 }
@@ -177,12 +180,11 @@ const AVOutputFormat *Recorder::findMuxer(const char *name)
 bool Recorder::recorderWriteHeader(const AVPacket *packet)
 {
     AVStream *ostream = m_formatCtx->streams[0];
-    quint8 *extradata = (quint8 *)av_malloc(packet->size * sizeof(quint8));
+    quint8 *extradata = static_cast<quint8 *>(av_malloc(packet->size * sizeof(quint8)));
     if (!extradata) {
         qCritical("Cannot allocate extradata");
         return false;
     }
-    // copy the first packet to the extra data
     memcpy(extradata, packet->data, packet->size);
 
 #ifdef QTSCRCPY_LAVF_HAS_NEW_CODEC_PARAMS_API
@@ -193,7 +195,7 @@ bool Recorder::recorderWriteHeader(const AVPacket *packet)
     ostream->codec->extradata_size = packet->size;
 #endif
 
-    int ret = avformat_write_header(m_formatCtx, NULL);
+    int ret = avformat_write_header(m_formatCtx, nullptr);
     if (ret < 0) {
         qCritical("Failed to write header recorder file");
         return false;
@@ -221,32 +223,32 @@ QString Recorder::recorderGetFormatName(Recorder::RecorderFormat format)
 
 Recorder::RecorderFormat Recorder::guessRecordFormat(const QString &fileName)
 {
-    if (4 > fileName.length()) {
+    if (fileName.length() < 4) {
         return Recorder::RECORDER_FORMAT_NULL;
     }
-    QFileInfo fileInfo = QFileInfo(fileName);
-    QString ext = fileInfo.suffix();
-    if (0 == ext.compare("mp4")) {
+
+    const QString ext = QFileInfo(fileName).suffix();
+    if (ext.compare("mp4", Qt::CaseInsensitive) == 0) {
         return Recorder::RECORDER_FORMAT_MP4;
     }
-    if (0 == ext.compare("mkv")) {
+    if (ext.compare("mkv", Qt::CaseInsensitive) == 0) {
         return Recorder::RECORDER_FORMAT_MKV;
     }
-
     return Recorder::RECORDER_FORMAT_NULL;
 }
 
 bool Recorder::push(AVPacket *packet)
 {
+    if (!packet) return false;
+
     QMutexLocker locker(&m_mutex);
-    
-    if (m_stopped || m_failed) {
+    if (m_stopped.load(std::memory_order_acquire) ||
+        m_failed.load(std::memory_order_acquire)) {
         return false;
     }
 
     m_queue.enqueue(packet);
     m_recvDataCond.wakeOne();
-    
     return true;
 }
 
@@ -255,16 +257,15 @@ void Recorder::run()
     AVPacket *previous = nullptr;
     int64_t ptsOrigin = AV_NOPTS_VALUE;
 
-    while (!m_stopped) {
+    while (true) {
         AVPacket *rec = nullptr;
-        
         {
             QMutexLocker locker(&m_mutex);
-            while (!m_stopped && m_queue.isEmpty()) {
+            while (m_queue.isEmpty() && !m_stopped.load(std::memory_order_acquire)) {
                 m_recvDataCond.wait(&m_mutex);
             }
 
-            if (m_stopped && m_queue.isEmpty()) {
+            if (m_queue.isEmpty() && m_stopped.load(std::memory_order_acquire)) {
                 break;
             }
 
@@ -274,20 +275,19 @@ void Recorder::run()
         }
 
         if (!rec) continue;
-        
+
         if (previous) {
             if (previous->pts != AV_NOPTS_VALUE && rec->pts != AV_NOPTS_VALUE) {
                 previous->duration = rec->pts - previous->pts;
             }
-            
-            bool ok = write(previous);
+
+            const bool ok = write(previous);
             packetDelete(previous);
             previous = nullptr;
 
             if (!ok) {
                 qCritical("Recorder: Could not record packet");
-                QMutexLocker locker(&m_mutex);
-                m_failed = true;
+                m_failed.store(true, std::memory_order_release);
                 packetDelete(rec);
                 queueClear();
                 break;
@@ -296,26 +296,25 @@ void Recorder::run()
 
         if (rec->pts == AV_NOPTS_VALUE) {
             if (!write(rec)) {
-                 qCritical("Recorder: Could not record config packet");
-                 packetDelete(rec);
-            } else {
-                 packetDelete(rec); 
+                qCritical("Recorder: Could not record config packet");
+                m_failed.store(true, std::memory_order_release);
             }
+            packetDelete(rec);
         } else {
             if (ptsOrigin == AV_NOPTS_VALUE) {
                 ptsOrigin = rec->pts;
             }
-            if (rec->pts != AV_NOPTS_VALUE) {
-                rec->pts -= ptsOrigin;
-                rec->dts = rec->pts;
-            }
+            rec->pts -= ptsOrigin;
+            rec->dts = rec->pts;
             previous = rec;
         }
     }
 
-    if (previous && !m_failed) {
+    if (previous && !m_failed.load(std::memory_order_acquire)) {
         previous->duration = 100000;
-        write(previous);
+        if (!write(previous)) {
+            m_failed.store(true, std::memory_order_release);
+        }
         packetDelete(previous);
     } else if (previous) {
         packetDelete(previous);
@@ -326,6 +325,10 @@ void Recorder::run()
 
 bool Recorder::startRecorder()
 {
+    if (!m_formatCtx || isRunning()) return false;
+
+    m_stopped.store(false, std::memory_order_release);
+    m_failed.store(false, std::memory_order_release);
     start();
     return true;
 }
@@ -333,6 +336,6 @@ bool Recorder::startRecorder()
 void Recorder::stopRecorder()
 {
     QMutexLocker locker(&m_mutex);
-    m_stopped = true;
-    m_recvDataCond.wakeOne();
+    m_stopped.store(true, std::memory_order_release);
+    m_recvDataCond.wakeAll();
 }

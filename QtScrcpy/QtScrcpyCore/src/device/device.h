@@ -4,6 +4,7 @@
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QTime>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <shared_mutex>
@@ -97,6 +98,7 @@ private:
 
 private:
     bool m_serverStartSuccess = false;
+    std::atomic_bool m_disconnecting{false};
 
     std::unique_ptr<Server> m_server;
     std::unique_ptr<Decoder> m_decoder;

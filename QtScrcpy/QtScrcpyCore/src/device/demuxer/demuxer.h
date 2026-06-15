@@ -6,6 +6,7 @@
 #include <QThread>
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -23,7 +24,7 @@ public:
         return instance;
     }
 
-    AVPacket* acquire() {
+    [[nodiscard]] AVPacket* acquire() {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (!m_pool.empty()) {
@@ -35,7 +36,7 @@ public:
         return av_packet_alloc();
     }
 
-    void release(AVPacket* packet) {
+    void release(AVPacket* packet) noexcept {
         if (!packet) return;
         av_packet_unref(packet);
 
@@ -73,12 +74,34 @@ private:
     std::mutex m_mutex;
 };
 
+struct PacketPoolDeleter {
+    void operator()(AVPacket* packet) const noexcept {
+        PacketPool::get().release(packet);
+    }
+};
+
+using PacketHandle = std::unique_ptr<AVPacket, PacketPoolDeleter>;
+
+[[nodiscard]] inline PacketHandle acquirePacketHandle() {
+    return PacketHandle(PacketPool::get().acquire());
+}
+
+[[nodiscard]] inline PacketHandle clonePacketReference(const AVPacket* source) {
+    if (!source) return {};
+
+    PacketHandle clone = acquirePacketHandle();
+    if (!clone || av_packet_ref(clone.get(), source) < 0) {
+        return {};
+    }
+    return clone;
+}
+
 class Demuxer : public QThread
 {
     Q_OBJECT
 public:
     explicit Demuxer(QObject *parent = nullptr);
-    virtual ~Demuxer() override;
+    ~Demuxer() override;
 
     [[nodiscard]] static bool init();
     static void deInit();

@@ -14,16 +14,16 @@ public:
     enum DeviceMsgType
     {
         DMT_NULL = -1,
-        // 和服务端对应
         DMT_GET_CLIPBOARD = 0,
     };
-    explicit DeviceMsg(QObject *parent = nullptr);
-    virtual ~DeviceMsg();
 
-    DeviceMsg::DeviceMsgType type();
+    explicit DeviceMsg(QObject *parent = nullptr);
+    ~DeviceMsg() override;
+
+    DeviceMsgType type();
     void getClipboardMsgData(QString &text);
 
-    qint32 deserialize(QByteArray &byteArray);
+    qint32 deserialize(const QByteArray &byteArray);
 
 private:
     struct DeviceMsgData

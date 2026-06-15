@@ -1,9 +1,9 @@
 #ifndef QYUVOPENGLWIDGET_H
 #define QYUVOPENGLWIDGET_H
 
-#include <QOpenGLWidget>
 #include <QOpenGLFunctions_4_5_Core>
 #include <QOpenGLShaderProgram>
+#include <QOpenGLWidget>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -15,7 +15,7 @@ class QYuvOpenGLWidget : public QOpenGLWidget, protected QOpenGLFunctions_4_5_Co
     Q_OBJECT
 public:
     explicit QYuvOpenGLWidget(QWidget *parent = nullptr);
-    virtual ~QYuvOpenGLWidget() override;
+    ~QYuvOpenGLWidget() override;
 
     QSize minimumSizeHint() const override;
     QSize sizeHint() const override;
@@ -29,7 +29,8 @@ public:
     QSize frameSize() const;
 
 signals:
-    void requestUpdateTextures(int width, int height, int strideY, int strideU, int strideV);
+    void requestUpdateTextures(int width, int height,
+                               int strideY, int strideU, int strideV);
 
 protected:
     void initializeGL() override;
@@ -37,6 +38,20 @@ protected:
     void resizeGL(int width, int height) override;
 
 private:
+    static constexpr int PBO_COUNT = 3;
+    static constexpr int STATE_FREE = 0;
+    static constexpr int STATE_WRITING = 1;
+    static constexpr int STATE_READY = 2;
+    static constexpr int STATE_PROCESSING = 3;
+
+    struct alignas(64) FrameBuffer {
+        std::array<GLuint, 3> pboIds{0, 0, 0};
+        std::array<void *, 3> mappedPtrs{nullptr, nullptr, nullptr};
+        GLsync fence = nullptr;
+        std::atomic<int> state{STATE_FREE};
+        std::uint64_t sequence = 0;
+    };
+
     void initShader();
     void initTextures(int width, int height);
     void deInitTextures();
@@ -46,6 +61,11 @@ private:
     void setFrameSize(const QSize &frameSize);
     void checkFences();
 
+    FrameBuffer *acquireWritableFrame();
+    int acquireNewestReadyFrame();
+    void releaseStaleReadyFrames(int selectedIndex);
+    void scheduleUpdate();
+
 private:
     std::atomic<int> m_frameWidth{-1};
     std::atomic<int> m_frameHeight{-1};
@@ -54,16 +74,6 @@ private:
     GLuint m_vbo = 0;
     QOpenGLShaderProgram m_program;
     std::array<GLuint, 3> m_textures{0, 0, 0};
-
-    static constexpr int PBO_COUNT = 3;
-
-    struct FrameBuffer {
-        std::array<GLuint, 3> pboIds{0, 0, 0};
-        std::array<void*, 3> mappedPtrs{nullptr, nullptr, nullptr};
-        GLsync fence = nullptr;
-        std::atomic<int> state{0};
-        std::uint64_t sequence = 0;
-    };
 
     std::array<FrameBuffer, PBO_COUNT> m_frames;
     std::array<int, 3> m_pboStrides{0, 0, 0};
@@ -76,6 +86,11 @@ private:
     bool m_isInitialized = false;
     mutable std::shared_mutex m_rwLock;
     std::atomic<std::uint64_t> m_globalSequence{0};
+
+    std::atomic<std::uint64_t> m_submittedFrames{0};
+    std::atomic<std::uint64_t> m_renderedFrames{0};
+    std::atomic<std::uint64_t> m_overwrittenReadyFrames{0};
+    std::atomic<std::uint64_t> m_droppedFrames{0};
 };
 
 #endif // QYUVOPENGLWIDGET_H

@@ -1,5 +1,7 @@
 #include "devicemsg.h"
 
+#include <limits>
+
 namespace {
 
 [[nodiscard]] quint32 readBigEndian32(const char *data) noexcept
@@ -45,6 +47,6 @@ qint32 DeviceMsg::deserialize(const QByteArray &byteArray)
     // Commit only after the complete payload has arrived.
     m_type = candidateType;
     m_clipboardText = QByteArray(byteArray.constData() + headerSize,
-                                 static_cast<qsizetype>(clipboardLength));
+                                 static_cast<int>(clipboardLength));
     return totalSize;
 }

@@ -1,16 +1,16 @@
 #ifndef CONTROLMSG_H
 #define CONTROLMSG_H
 
-#include <QBuffer>
+#include <QByteArray>
 #include <QRect>
 #include <QString>
+#include <span>
 
 #include "input.h"
 #include "keycodes.h"
 #include "qscrcpyevent.h"
 
 #define CONTROL_MSG_MAX_SIZE (1 << 18) // 256k
-
 #define CONTROL_MSG_INJECT_TEXT_MAX_LENGTH 300
 // type: 1 byte; sequence: 8 bytes; paste flag: 1 byte; length: 4 bytes
 #define CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH \
@@ -18,14 +18,14 @@
 
 #define POINTER_ID_MOUSE static_cast<quint64>(-1)
 #define POINTER_ID_GENERIC_FINGER static_cast<quint64>(-2)
-
-// Used for injecting an additional virtual pointer for pinch-to-zoom
 #define POINTER_ID_VIRTUAL_MOUSE static_cast<quint64>(-3)
 #define POINTER_ID_VIRTUAL_FINGER static_cast<quint64>(-4)
 
 class ControlMsg : public QScrcpyEvent
 {
 public:
+    static constexpr std::size_t INLINE_SERIALIZED_CAPACITY = 64;
+
     enum ControlMsgType
     {
         CMT_NULL = -1,
@@ -73,12 +73,9 @@ public:
     void setDisplayPowerData(bool on);
     void setBackOrScreenOnData(bool down);
 
-    QByteArray serializeData();
-
-private:
-    void writePosition(QBuffer &buffer, const QRect &value);
-    quint16 flostToU16fp(float f);
-    qint16 flostToI16fp(float f);
+    // Returns bytes written, -1 for variable-size messages, or 0 on failure.
+    [[nodiscard]] int serializeTo(std::span<char> output) const noexcept;
+    [[nodiscard]] QByteArray serializeData() const;
 
 private:
     struct ControlMsgData

@@ -1,8 +1,11 @@
+#include <QDateTime>
 #include <QDir>
-#include <QMessageBox>
+#include <QImage>
+#include <QTcpSocket>
 #include <QTimer>
-#include <span>
-#include <QMetaObject>
+#include <algorithm>
+#include <mutex>
+#include <utility>
 
 #include "controller.h"
 #include "devicemsg.h"
@@ -13,239 +16,180 @@
 #include "server.h"
 #include "demuxer.h"
 
-extern "C" {
-#include "libavcodec/avcodec.h"
-}
-
 namespace qsc {
 
-Device::Device(DeviceParams params, QObject *parent) : IDevice(parent), m_params(params)
+Device::Device(DeviceParams params, QObject *parent)
+    : IDevice(parent), m_params(std::move(params))
 {
-    if (!params.display && !m_params.recordFile) {
+    if (!m_params.display && !m_params.recordFile) {
         qCritical("not display must be recorded");
         return;
     }
 
-    if (params.display) {
-        auto decoderCallback = [this](int width, int height, 
-                                      std::span<const uint8_t> dataY, 
-                                      std::span<const uint8_t> dataU, 
-                                      std::span<const uint8_t> dataV, 
-                                      int linesizeY, int linesizeU, int linesizeV) {
-            for (const auto& item : m_deviceObservers) {
-                item->onFrame(width, height, dataY, dataU, dataV, linesizeY, linesizeU, linesizeV);
-            }
-        };
+    if (m_params.display) {
+        m_decoder = std::make_unique<Decoder>(
+            [this](int w, int h,
+                   std::span<const uint8_t> y,
+                   std::span<const uint8_t> u,
+                   std::span<const uint8_t> v,
+                   int sy, int su, int sv) {
+                forEachObserver([&](DeviceObserver &observer) {
+                    observer.onFrame(w, h, y, u, v, sy, su, sv);
+                });
+            });
 
-        // Pass variabel callback
-        m_decoder = std::make_unique<Decoder>(decoderCallback, nullptr);
-
-        m_fileHandler = std::make_unique<FileHandler>(nullptr);
-        
-        auto controllerCallback = [this](const QByteArray& buffer) -> qint64 {
-            if (!m_server || !m_server->getControlSocket()) return 0;
-            return m_server->getControlSocket()->write(buffer.data(), buffer.length());
-        };
-
-        m_controller = std::make_unique<Controller>(controllerCallback, params.gameScript, nullptr);
+        m_fileHandler = std::make_unique<FileHandler>();
+        m_controller = std::make_unique<Controller>(
+            [this](const QByteArray &data) -> qint64 {
+                QTcpSocket *socket = m_server ? m_server->getControlSocket() : nullptr;
+                return socket ? socket->write(data.constData(), data.size()) : 0;
+            },
+            m_params.gameScript);
     }
 
-    m_stream = std::make_unique<Demuxer>(nullptr);
-    m_server = std::make_unique<Server>(nullptr);
+    m_stream = std::make_unique<Demuxer>();
+    m_server = std::make_unique<Server>();
 
     if (m_params.recordFile && !m_params.recordPath.trimmed().isEmpty()) {
-        QString absFilePath;
-        QString fileDir(m_params.recordPath);
-        if (!fileDir.isEmpty()) {
-            // Gunakan format string yang efisien
-            QDateTime dateTime = QDateTime::currentDateTime();
-            QString fileName = m_params.serial + "_" + dateTime.toString("yyyyMMdd_hhmmss_zzz");
-            fileName.replace(":", "_");
-            fileName.replace(".", "_");
-            fileName += ("." + m_params.recordFileFormat);
-            
-            QDir dir(fileDir);
-            if (!dir.exists()) {
-                if (!dir.mkpath(fileDir)) {
-                    qCritical() << QString("Failed to create the save folder: %1").arg(fileDir);
-                }
-            }
-            absFilePath = dir.absoluteFilePath(fileName);
+        QDir dir(m_params.recordPath);
+        if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+            qCritical() << "Failed to create save folder:" << m_params.recordPath;
         }
-        m_recorder = std::make_unique<Recorder>(absFilePath, nullptr);
+        QString name = m_params.serial + QLatin1Char('_') +
+                       QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz") +
+                       QLatin1Char('.') + m_params.recordFileFormat;
+        name.replace(QLatin1Char(':'), QLatin1Char('_'));
+        m_recorder = std::make_unique<Recorder>(dir.absoluteFilePath(name));
     }
+
     initSignals();
 }
 
-Device::~Device()
-{
-    Device::disconnectDevice();
-}
+Device::~Device() { disconnectDevice(); }
 
-void Device::setUserData(void *data)
-{
-    m_userData = data;
-}
+void Device::setUserData(void *data) { m_userData = data; }
+void *Device::getUserData() { return m_userData; }
 
-void *Device::getUserData()
+void Device::registerDeviceObserver(DeviceObserver *observer)
 {
-    return m_userData;
-}
-
-void Device::registerDeviceObserver(DeviceObserver* observer) {
     if (!observer) return;
-    if (std::ranges::find(m_deviceObservers, observer) == m_deviceObservers.end()) {
+    std::unique_lock lock(m_observerMutex);
+    if (std::find(m_deviceObservers.begin(), m_deviceObservers.end(), observer) ==
+        m_deviceObservers.end()) {
         m_deviceObservers.push_back(observer);
     }
 }
 
-void Device::deRegisterDeviceObserver(DeviceObserver* observer) {
-    std::erase(m_deviceObservers, observer); 
+void Device::deRegisterDeviceObserver(DeviceObserver *observer)
+{
+    std::unique_lock lock(m_observerMutex);
+    std::erase(m_deviceObservers, observer);
 }
 
-const QString &Device::getSerial()
-{
-    return m_params.serial;
-}
+const QString &Device::getSerial() { return m_params.serial; }
 
 void Device::updateScript(QString script)
 {
-    if (m_controller) {
-        m_controller->updateScript(script);
-    }
+    if (m_controller) m_controller->updateScript(std::move(script));
 }
 
 void Device::screenshot()
 {
-    if (!m_decoder) {
-        return;
+    if (m_decoder) {
+        m_decoder->peekFrame([this](int w, int h, uint8_t *rgb) {
+            saveFrame(w, h, rgb);
+        });
     }
-
-    m_decoder->peekFrame([this](int width, int height, uint8_t* dataRGB32) {
-       saveFrame(width, height, dataRGB32);
-    });
 }
 
 void Device::showTouch(bool show)
 {
-    AdbProcess *adb = new qsc::AdbProcess();
-    if (!adb) {
-        return;
-    }
-    connect(adb, &qsc::AdbProcess::adbProcessResult, this, [this](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
-        if (AdbProcess::AER_SUCCESS_START != processResult) {
-            sender()->deleteLater();
-        }
-    });
+    auto *adb = new AdbProcess();
+    connect(adb, &AdbProcess::adbProcessResult, adb,
+            [adb](AdbProcess::ADB_EXEC_RESULT) { adb->deleteLater(); });
     adb->setShowTouchesEnabled(getSerial(), show);
-
-    qInfo() << getSerial() << " show touch " << (show ? "enable" : "disable");
 }
 
 bool Device::isReversePort(quint16 port)
 {
-    if (m_server && m_server->isReverse() && port == m_server->getParams().localPort) {
-        return true;
-    }
-
-    return false;
+    return m_server && m_server->isReverse() &&
+           port == m_server->getParams().localPort;
 }
 
 void Device::initSignals()
 {
     if (m_controller) {
-        connect(m_controller.get(), &Controller::grabCursor, this, [this](bool grab){
-            for (const auto& item : m_deviceObservers) {
-                item->grabCursor(grab);
-            }
+        connect(m_controller.get(), &Controller::grabCursor, this, [this](bool grab) {
+            forEachObserver([grab](DeviceObserver &o) { o.grabCursor(grab); });
         });
     }
+
     if (m_fileHandler) {
-        connect(m_fileHandler.get(), &FileHandler::fileHandlerResult, this, [this](FileHandler::FILE_HANDLER_RESULT processResult, bool isApk) {
-            QString tipsType = "";
-            if (isApk) {
-                tipsType = "install apk";
-            } else {
-                tipsType = "file transfer";
-            }
-            QString tips;
-            if (FileHandler::FAR_IS_RUNNING == processResult) {
-                tips = QString("wait current %1 to complete").arg(tipsType);
-            }
-            if (FileHandler::FAR_SUCCESS_EXEC == processResult) {
-                tips = QString("%1 complete, save in %2").arg(tipsType).arg(m_params.pushFilePath);
-            }
-            if (FileHandler::FAR_ERROR_EXEC == processResult) {
-                tips = QString("%1 failed").arg(tipsType);
-            }
-            qInfo() << tips;
+        connect(m_fileHandler.get(), &FileHandler::fileHandlerResult, this,
+                [this](FileHandler::FILE_HANDLER_RESULT result, bool apk) {
+            const QString action = apk ? QStringLiteral("install apk")
+                                       : QStringLiteral("file transfer");
+            if (result == FileHandler::FAR_IS_RUNNING)
+                qInfo() << QStringLiteral("wait current %1 to complete").arg(action);
+            else if (result == FileHandler::FAR_SUCCESS_EXEC)
+                qInfo() << QStringLiteral("%1 complete, save in %2")
+                               .arg(action, m_params.pushFilePath);
+            else if (result == FileHandler::FAR_ERROR_EXEC)
+                qInfo() << QStringLiteral("%1 failed").arg(action);
         });
     }
 
     if (m_server) {
-        connect(m_server.get(), &Server::serverStarted, this, [this](bool success, const QString &deviceName, const QSize &size) {
-            m_serverStartSuccess = success;
-            emit deviceConnected(success, m_params.serial, deviceName, size);
-            if (success) {
-                double diff = m_startTimeCount.elapsed() / 1000.0;
-                qInfo() << QString("server start finish in %1s").arg(diff).toStdString().c_str();
-
-                // init recorder
-                if (m_recorder) {
-                    m_recorder->setFrameSize(size);
-                    if (!m_recorder->open()) {
-                        qCritical("Could not open recorder");
-                    }
-                    if (!m_recorder->startRecorder()) {
-                        qCritical("Could not start recorder");
-                    }
-                }
-
-                // init decoder
-                if (m_decoder) {
-                    if (!m_decoder->open()) {
-                        qCritical("Could not open decoder");
-                        m_server->stop();
-                        return;
-                    }
-                }
-
-                // init stream
-                m_stream->installVideoSocket(m_server->removeVideoSocket());
-                m_stream->setFrameSize(size);
-                
-                if (!m_stream->startDecode()) {
-                    qCritical("Could not start demuxer");
-                    m_server->stop();
-                    return;
-                }
-
-        
-            connect(m_server->getControlSocket(), &QTcpSocket::readyRead, this, [this](){
-                if (!m_controller) return;
-
-                auto controlSocket = m_server->getControlSocket();
-                int quota = 60;
-                while (controlSocket->bytesAvailable() && quota-- > 0) { 
-                    QByteArray byteArray = controlSocket->peek(controlSocket->bytesAvailable());
-                    DeviceMsg deviceMsg; 
-                    qint32 consume = deviceMsg.deserialize(byteArray);
-                    
-                    if (0 >= consume) {
-                        break;
-                    }
-                    
-                    controlSocket->read(consume);
-                    m_controller->recvDeviceMsg(&deviceMsg);
-                }
-            });
-        if (m_params.closeScreen && m_params.display && m_controller) {
-                    m_controller->setDisplayPower(false);
-                }
-            } else {
+        connect(m_server.get(), &Server::serverStarted, this,
+                [this](bool ok, const QString &name, const QSize &size) {
+            m_serverStartSuccess = ok;
+            emit deviceConnected(ok, m_params.serial, name, size);
+            if (!ok) {
                 m_server->stop();
+                return;
             }
+
+            qInfo() << "server start finish in"
+                    << m_startTimeCount.elapsed() / 1000.0 << "s";
+
+            if (m_recorder) {
+                m_recorder->setFrameSize(size);
+                if (!m_recorder->open() || !m_recorder->startRecorder())
+                    qCritical("Could not start recorder");
+            }
+            if (m_decoder && !m_decoder->open()) {
+                qCritical("Could not open decoder");
+                m_server->stop();
+                return;
+            }
+
+            m_stream->installVideoSocket(m_server->removeVideoSocket());
+            m_stream->setFrameSize(size);
+            if (!m_stream->startDecode()) {
+                qCritical("Could not start demuxer");
+                m_server->stop();
+                return;
+            }
+
+            if (QTcpSocket *socket = m_server->getControlSocket()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+                    if (!m_controller) return;
+                    int quota = 60;
+                    while (socket->bytesAvailable() > 0 && quota-- > 0) {
+                        const QByteArray bytes = socket->peek(socket->bytesAvailable());
+                        DeviceMsg message;
+                        const qint32 consumed = message.deserialize(bytes);
+                        if (consumed <= 0) break;
+                        socket->read(consumed);
+                        m_controller->recvDeviceMsg(&message);
+                    }
+                });
+            }
+
+            if (m_params.closeScreen && m_params.display && m_controller)
+                m_controller->setDisplayPower(false);
         });
+
         connect(m_server.get(), &Server::serverStoped, this, [this]() {
             disconnectDevice();
             qDebug() << "server process stop";
@@ -258,408 +202,145 @@ void Device::initSignals()
             qDebug() << "stream thread stop";
         });
 
-        connect(m_stream.get(), &Demuxer::getFrame, this, [this](AVPacket *packet) {
-            
+        connect(m_stream.get(), &Demuxer::getFrame, this,
+                [this](AVPacket *raw) {
+            PacketHandle packet(raw);
+            if (!packet) return;
+
             if (m_recorder) {
-                AVPacket *recPacket = av_packet_clone(packet);
-                if (recPacket) {
-                    if (!m_recorder->push(recPacket)) {
-                        av_packet_free(&recPacket);
-                    }
-                }
+                PacketHandle copy = clonePacketReference(packet.get());
+                if (copy && m_recorder->push(copy.get())) copy.release();
             }
-
-            if (m_decoder) {
-                bool sent = QMetaObject::invokeMethod(m_decoder.get(), "onDecodeFrame", 
-                                          Qt::QueuedConnection, 
-                                          Q_ARG(AVPacket*, packet));
-                if (!sent) {
-                    av_packet_free(&packet);
-                }
-            } else {
-                av_packet_free(&packet);
-            }
-
+            if (m_decoder) m_decoder->enqueuePacket(std::move(packet));
         }, Qt::DirectConnection);
 
-        connect(m_stream.get(), &Demuxer::getConfigFrame, this, [this](AVPacket *packet) {
-            if (m_recorder) {
-                if (!m_recorder->push(packet)) {
-                    av_packet_free(&packet);
-                    qCritical("Could not send config packet to recorder");
-                }
-            } else {
-                av_packet_free(&packet);
-            }
+        connect(m_stream.get(), &Demuxer::getConfigFrame, this,
+                [this](AVPacket *raw) {
+            PacketHandle packet(raw);
+            if (packet && m_recorder && m_recorder->push(packet.get()))
+                packet.release();
         }, Qt::DirectConnection);
     }
 
     if (m_decoder) {
         connect(m_decoder.get(), &Decoder::updateFPS, this, [this](quint32 fps) {
-            for (const auto& item : m_deviceObservers) {
-                item->updateFPS(fps);
-            }
+            forEachObserver([fps](DeviceObserver &o) { o.updateFPS(fps); });
         });
     }
 }
 
 bool Device::connectDevice()
 {
-    if (!m_server || m_serverStartSuccess) {
-        return false;
-    }
-
+    if (!m_server || m_serverStartSuccess) return false;
     QTimer::singleShot(0, this, [this]() {
+        if (!m_server) return;
         m_startTimeCount.start();
-        Server::ServerParams params;
-        params.serverLocalPath = m_params.serverLocalPath;
-        params.serverRemotePath = m_params.serverRemotePath;
-        params.serial = m_params.serial;
-        params.localPort = m_params.localPort;
-        params.maxSize = m_params.maxSize;
-        params.bitRate = m_params.bitRate;
-        params.maxFps = m_params.maxFps;
-        params.useReverse = m_params.useReverse;
-        params.captureOrientationLock = m_params.captureOrientationLock;
-        params.captureOrientation = m_params.captureOrientation;
-        params.stayAwake = m_params.stayAwake;
-        params.serverVersion = m_params.serverVersion;
-        params.logLevel = m_params.logLevel;
-        params.codecOptions = m_params.codecOptions;
-        params.codecName = m_params.codecName;
-        params.scid = m_params.scid;
-
-        params.crop = "";
-        params.control = true;
-        m_server->start(params);
+        Server::ServerParams p;
+        p.serverLocalPath = m_params.serverLocalPath;
+        p.serverRemotePath = m_params.serverRemotePath;
+        p.serial = m_params.serial;
+        p.localPort = m_params.localPort;
+        p.maxSize = m_params.maxSize;
+        p.bitRate = m_params.bitRate;
+        p.maxFps = m_params.maxFps;
+        p.useReverse = m_params.useReverse;
+        p.captureOrientationLock = m_params.captureOrientationLock;
+        p.captureOrientation = m_params.captureOrientation;
+        p.stayAwake = m_params.stayAwake;
+        p.serverVersion = m_params.serverVersion;
+        p.logLevel = m_params.logLevel;
+        p.codecOptions = m_params.codecOptions;
+        p.codecName = m_params.codecName;
+        p.scid = m_params.scid;
+        p.crop.clear();
+        p.control = true;
+        m_server->start(p);
     });
-
     return true;
 }
 
 void Device::disconnectDevice()
 {
-    if (m_server) {
-        m_server->stop();
-        m_server.reset();
-    }
-
-    if (m_stream) {
-        m_stream->stopDecode();
-        m_stream->quit();
-        m_stream->wait();
-        m_stream.reset();
-    }
-
-    if (m_decoder) {
-        m_decoder->close();
-        m_decoder.reset();
-    }
-
+    if (m_server) { m_server->stop(); m_server.reset(); }
+    if (m_stream) { m_stream->stopDecode(); m_stream.reset(); }
+    if (m_decoder) { m_decoder->close(); m_decoder.reset(); }
     if (m_recorder) {
-        if (m_recorder->isRunning()) {
-            m_recorder->stopRecorder();
-            m_recorder->wait();
-        }
+        if (m_recorder->isRunning()) { m_recorder->stopRecorder(); m_recorder->wait(); }
         m_recorder.reset();
     }
-
     m_controller.reset();
     m_fileHandler.reset();
-
-    if (m_serverStartSuccess) {
-        emit deviceDisconnected(m_params.serial);
-    }
+    if (m_serverStartSuccess) emit deviceDisconnected(m_params.serial);
     m_serverStartSuccess = false;
 }
 
-void Device::postGoBack()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postGoBack();
+void Device::postGoBack() { if (m_controller) { m_controller->postGoBack(); forEachObserver([](DeviceObserver &o){ o.postGoBack(); }); } }
+void Device::postGoHome() { if (m_controller) { m_controller->postGoHome(); forEachObserver([](DeviceObserver &o){ o.postGoHome(); }); } }
+void Device::postGoMenu() { if (m_controller) { m_controller->postGoMenu(); forEachObserver([](DeviceObserver &o){ o.postGoMenu(); }); } }
+void Device::postAppSwitch() { if (m_controller) { m_controller->postAppSwitch(); forEachObserver([](DeviceObserver &o){ o.postAppSwitch(); }); } }
+void Device::postPower() { if (m_controller) { m_controller->postPower(); forEachObserver([](DeviceObserver &o){ o.postPower(); }); } }
+void Device::postVolumeUp() { if (m_controller) { m_controller->postVolumeUp(); forEachObserver([](DeviceObserver &o){ o.postVolumeUp(); }); } }
+void Device::postVolumeDown() { if (m_controller) { m_controller->postVolumeDown(); forEachObserver([](DeviceObserver &o){ o.postVolumeDown(); }); } }
+void Device::postCopy() { if (m_controller) { m_controller->copy(); forEachObserver([](DeviceObserver &o){ o.postCopy(); }); } }
+void Device::postCut() { if (m_controller) { m_controller->cut(); forEachObserver([](DeviceObserver &o){ o.postCut(); }); } }
+void Device::setDisplayPower(bool on) { if (m_controller) { m_controller->setDisplayPower(on); forEachObserver([on](DeviceObserver &o){ o.setDisplayPower(on); }); } }
+void Device::expandNotificationPanel() { if (m_controller) { m_controller->expandNotificationPanel(); forEachObserver([](DeviceObserver &o){ o.expandNotificationPanel(); }); } }
+void Device::collapsePanel() { if (m_controller) { m_controller->collapsePanel(); forEachObserver([](DeviceObserver &o){ o.collapsePanel(); }); } }
+void Device::postBackOrScreenOn(bool down) { if (m_controller) { m_controller->postBackOrScreenOn(down); forEachObserver([down](DeviceObserver &o){ o.postBackOrScreenOn(down); }); } }
+void Device::postTextInput(QString &text) { if (m_controller) { m_controller->postTextInput(text); forEachObserver([&](DeviceObserver &o){ o.postTextInput(text); }); } }
+void Device::requestDeviceClipboard() { if (m_controller) { m_controller->requestDeviceClipboard(); forEachObserver([](DeviceObserver &o){ o.requestDeviceClipboard(); }); } }
+void Device::setDeviceClipboard(bool pause) { if (m_controller) { m_controller->setDeviceClipboard(pause); forEachObserver([pause](DeviceObserver &o){ o.setDeviceClipboard(pause); }); } }
+void Device::clipboardPaste() { if (m_controller) { m_controller->clipboardPaste(); forEachObserver([](DeviceObserver &o){ o.clipboardPaste(); }); } }
 
-    for (const auto& item : m_deviceObservers) {
-        item->postGoBack();
-    }
+void Device::pushFileRequest(const QString &file, const QString &path)
+{
+    if (!m_fileHandler) return;
+    m_fileHandler->onPushFileRequest(getSerial(), file, path);
+    forEachObserver([&](DeviceObserver &o){ o.pushFileRequest(file, path); });
 }
 
-void Device::postGoHome()
+void Device::installApkRequest(const QString &apk)
 {
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postGoHome();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postGoHome();
-    }
+    if (!m_fileHandler) return;
+    m_fileHandler->onInstallApkRequest(getSerial(), apk);
+    forEachObserver([&](DeviceObserver &o){ o.installApkRequest(apk); });
 }
 
-void Device::postGoMenu()
+void Device::mouseEvent(const QMouseEvent *e, const QSize &frame, const QSize &show)
 {
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postGoMenu();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postGoMenu();
-    }
+    if (!m_controller) return;
+    m_controller->mouseEvent(e, frame, show);
+    forEachObserver([&](DeviceObserver &o){ o.mouseEvent(e, frame, show); });
 }
 
-void Device::postAppSwitch()
+void Device::wheelEvent(const QWheelEvent *e, const QSize &frame, const QSize &show)
 {
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postAppSwitch();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postAppSwitch();
-    }
+    if (!m_controller) return;
+    m_controller->wheelEvent(e, frame, show);
+    forEachObserver([&](DeviceObserver &o){ o.wheelEvent(e, frame, show); });
 }
 
-void Device::postPower()
+void Device::keyEvent(const QKeyEvent *e, const QSize &frame, const QSize &show)
 {
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postPower();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postPower();
-    }
-}
-
-void Device::postVolumeUp()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postVolumeUp();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postVolumeUp();
-    }
-}
-
-void Device::postVolumeDown()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postVolumeDown();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postVolumeDown();
-    }
-}
-
-void Device::postCopy()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->copy();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postCopy();
-    }
-}
-
-void Device::postCut()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->cut();
-
-    for (const auto& item : m_deviceObservers) {
-        item->postCut();
-    }
-}
-
-void Device::setDisplayPower(bool on)
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->setDisplayPower(on);
-
-    for (const auto& item : m_deviceObservers) {
-        item->setDisplayPower(on);
-    }
-}
-
-void Device::expandNotificationPanel()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->expandNotificationPanel();
-
-    for (const auto& item : m_deviceObservers) {
-        item->expandNotificationPanel();
-    }
-}
-
-void Device::collapsePanel()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->collapsePanel();
-
-    for (const auto& item : m_deviceObservers) {
-        item->collapsePanel();
-    }
-}
-
-void Device::postBackOrScreenOn(bool down)
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postBackOrScreenOn(down);
-
-    for (const auto& item : m_deviceObservers) {
-        item->postBackOrScreenOn(down);
-    }
-}
-
-void Device::postTextInput(QString &text)
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->postTextInput(text);
-
-    for (const auto& item : m_deviceObservers) {
-        item->postTextInput(text);
-    }
-}
-
-void Device::requestDeviceClipboard()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->requestDeviceClipboard();
-
-    for (const auto& item : m_deviceObservers) {
-        item->requestDeviceClipboard();
-    }
-}
-
-void Device::setDeviceClipboard(bool pause)
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->setDeviceClipboard(pause);
-
-    for (const auto& item : m_deviceObservers) {
-        item->setDeviceClipboard(pause);
-    }
-}
-
-void Device::clipboardPaste()
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->clipboardPaste();
-
-    for (const auto& item : m_deviceObservers) {
-        item->clipboardPaste();
-    }
-}
-
-void Device::pushFileRequest(const QString &file, const QString &devicePath)
-{
-    if (!m_fileHandler) {
-        return;
-    }
-    m_fileHandler->onPushFileRequest(getSerial(), file, devicePath);
-
-    for (const auto& item : m_deviceObservers) {
-        item->pushFileRequest(file, devicePath);
-    }
-}
-
-void Device::installApkRequest(const QString &apkFile)
-{
-    if (!m_fileHandler) {
-        return;
-    }
-    m_fileHandler->onInstallApkRequest(getSerial(), apkFile);
-
-    for (const auto& item : m_deviceObservers) {
-        item->installApkRequest(apkFile);
-    }
-}
-
-void Device::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->mouseEvent(from, frameSize, showSize);
-
-    for (const auto& item : m_deviceObservers) {
-        item->mouseEvent(from, frameSize, showSize);
-    }
-}
-
-void Device::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->wheelEvent(from, frameSize, showSize);
-
-    for (const auto& item : m_deviceObservers) {
-        item->wheelEvent(from, frameSize, showSize);
-    }
-}
-
-void Device::keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize)
-{
-    if (!m_controller) {
-        return;
-    }
-    m_controller->keyEvent(from, frameSize, showSize);
-
-    for (const auto& item : m_deviceObservers) {
-        item->keyEvent(from, frameSize, showSize);
-    }
+    if (!m_controller) return;
+    m_controller->keyEvent(e, frame, show);
+    forEachObserver([&](DeviceObserver &o){ o.keyEvent(e, frame, show); });
 }
 
 bool Device::isCurrentCustomKeymap()
 {
-    if (!m_controller) {
-        return false;
-    }
-    return m_controller->isCurrentCustomKeymap();
+    return m_controller && m_controller->isCurrentCustomKeymap();
 }
 
-bool Device::saveFrame(int width, int height, uint8_t* dataRGB32)
+bool Device::saveFrame(int w, int h, uint8_t *rgb)
 {
-    if (!dataRGB32) return false;
-    QImage rgbImage(dataRGB32, width, height, QImage::Format_RGB32);
-    QString fileDir(m_params.recordPath);
-    if (fileDir.isEmpty()) {
-        qWarning() << "please select record save path!!!";
-        return false;
-    }
-    QDateTime dateTime = QDateTime::currentDateTime();
-    QString fileName = m_params.serial + "_" + dateTime.toString("yyyyMMdd_hhmmss_zzz") + ".png";
-    fileName.replace(":", "_");
-    fileName.replace(".", "_");
-    QDir dir(fileDir);
-    return rgbImage.save(dir.absoluteFilePath(fileName), "PNG", 100);
+    if (!rgb || w <= 0 || h <= 0 || m_params.recordPath.isEmpty()) return false;
+    QImage image(rgb, w, h, QImage::Format_RGB32);
+    QString name = m_params.serial + QLatin1Char('_') +
+                   QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz") +
+                   QStringLiteral(".png");
+    name.replace(QLatin1Char(':'), QLatin1Char('_'));
+    return image.save(QDir(m_params.recordPath).absoluteFilePath(name), "PNG", 100);
 }
 
-}
+} // namespace qsc

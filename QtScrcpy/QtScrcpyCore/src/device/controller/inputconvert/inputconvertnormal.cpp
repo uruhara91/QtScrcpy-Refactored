@@ -10,11 +10,10 @@ InputConvertNormal::~InputConvertNormal() {}
 
 void InputConvertNormal::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
 {
-    if (!from) {
+    if (!from || !m_controller || frameSize.isEmpty() || showSize.isEmpty()) {
         return;
     }
 
-    // action
     AndroidMotioneventAction action;
     switch (from->type()) {
     case QEvent::MouseButtonPress:
@@ -24,7 +23,6 @@ void InputConvertNormal::mouseEvent(const QMouseEvent *from, const QSize &frameS
         action = AMOTION_EVENT_ACTION_UP;
         break;
     case QEvent::MouseMove:
-        // only support left button drag
         if (!(from->buttons() & Qt::LeftButton)) {
             return;
         }
@@ -34,71 +32,60 @@ void InputConvertNormal::mouseEvent(const QMouseEvent *from, const QSize &frameS
         return;
     }
 
-    // pos
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
     QPointF pos = from->localPos();
 #else
     QPointF pos = from->position();
 #endif
-    // convert pos
     pos.setX(pos.x() * frameSize.width() / showSize.width());
     pos.setY(pos.y() * frameSize.height() / showSize.height());
 
-    // set data
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TOUCH);
-    if (!controlMsg) {
-        return;
-    }
-    controlMsg->setInjectTouchMsgData(
+    ControlMsg controlMsg(ControlMsg::CMT_INJECT_TOUCH);
+    controlMsg.setInjectTouchMsgData(
         static_cast<quint64>(POINTER_ID_GENERIC_FINGER),
         action,
         convertMouseButton(from->button()),
         convertMouseButtons(from->buttons()),
         QRect(pos.toPoint(), frameSize),
         AMOTION_EVENT_ACTION_DOWN == action ? 1.0f : 0.0f);
-    sendControlMsg(controlMsg);
+    (void)m_controller->sendControl(controlMsg.serializeData());
 }
 
 void InputConvertNormal::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
 {
-    if (!from || from->angleDelta().isNull()) {
+    if (!from || !m_controller || frameSize.isEmpty() || showSize.isEmpty() ||
+        from->angleDelta().isNull()) {
         return;
     }
 
-    // delta
-    float hScroll = from->angleDelta().x() / 64.0f;
-    float vScroll = from->angleDelta().y() / 64.0f;
+    const float hScroll = from->angleDelta().x() / 64.0f;
+    const float vScroll = from->angleDelta().y() / 64.0f;
 
-    // pos
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
     QPointF pos = from->position();
 #else
     QPointF pos = from->posF();
 #endif
-    // convert pos
     pos.setX(pos.x() * frameSize.width() / showSize.width());
     pos.setY(pos.y() * frameSize.height() / showSize.height());
 
-    // set data
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_SCROLL);
-    if (!controlMsg) {
-        return;
-    }
-    controlMsg->setInjectScrollMsgData(QRect(pos.toPoint(), frameSize), hScroll, vScroll, convertMouseButtons(from->buttons()));
-    sendControlMsg(controlMsg);
+    ControlMsg controlMsg(ControlMsg::CMT_INJECT_SCROLL);
+    controlMsg.setInjectScrollMsgData(
+        QRect(pos.toPoint(), frameSize),
+        hScroll,
+        vScroll,
+        convertMouseButtons(from->buttons()));
+    (void)m_controller->sendControl(controlMsg.serializeData());
 }
 
 void InputConvertNormal::keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize)
 {
     Q_UNUSED(frameSize)
     Q_UNUSED(showSize)
-    if (!from) {
+    if (!from || !m_controller) {
         return;
     }
 
-    bool repeat = from->isAutoRepeat();
-
-    // action
     AndroidKeyeventAction action;
     switch (from->type()) {
     case QEvent::KeyPress:
@@ -111,26 +98,24 @@ void InputConvertNormal::keyEvent(const QKeyEvent *from, const QSize &frameSize,
         return;
     }
 
-    // key code
-    AndroidKeycode keyCode = convertKeyCode(from->key(), from->modifiers());
+    const AndroidKeycode keyCode = convertKeyCode(from->key(), from->modifiers());
     if (AKEYCODE_UNKNOWN == keyCode) {
         return;
     }
 
-    // set data
-    ControlMsg *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
-    if (!controlMsg) {
-        return;
-    }
-
-    if (repeat) {
-        m_repeat++;
+    if (from->isAutoRepeat()) {
+        ++m_repeat;
     } else {
         m_repeat = 0;
     }
 
-    controlMsg->setInjectKeycodeMsgData(action, keyCode, m_repeat, convertMetastate(from->modifiers()));
-    sendControlMsg(controlMsg);
+    ControlMsg controlMsg(ControlMsg::CMT_INJECT_KEYCODE);
+    controlMsg.setInjectKeycodeMsgData(
+        action,
+        keyCode,
+        m_repeat,
+        convertMetastate(from->modifiers()));
+    (void)m_controller->sendControl(controlMsg.serializeData());
 }
 
 AndroidMotioneventButtons InputConvertNormal::convertMouseButtons(Qt::MouseButtons buttonState)
@@ -146,7 +131,7 @@ AndroidMotioneventButtons InputConvertNormal::convertMouseButtons(Qt::MouseButto
     if (buttonState & Qt::MiddleButton) {
 #else
     if (buttonState & Qt::MidButton) {
-#endif    
+#endif
         buttons |= AMOTION_EVENT_BUTTON_TERTIARY;
     }
     if (buttonState & Qt::XButton1) {
@@ -186,7 +171,6 @@ AndroidMotioneventButtons InputConvertNormal::convertMouseButton(Qt::MouseButton
 AndroidKeycode InputConvertNormal::convertKeyCode(int key, Qt::KeyboardModifiers modifiers)
 {
     AndroidKeycode keyCode = AKEYCODE_UNKNOWN;
-    // functional keys
     switch (key) {
     case Qt::Key_Return:
         keyCode = AKEYCODE_ENTER;
@@ -235,12 +219,10 @@ AndroidKeycode InputConvertNormal::convertKeyCode(int key, Qt::KeyboardModifiers
         return keyCode;
     }
 
-    // if ALT and META are pressed, dont handle letters and space
     if (modifiers & (Qt::AltModifier | Qt::MetaModifier)) {
         return keyCode;
     }
 
-    // character keys
     switch (key) {
     case Qt::Key_A:
         keyCode = AKEYCODE_A;
@@ -324,7 +306,7 @@ AndroidKeycode InputConvertNormal::convertKeyCode(int key, Qt::KeyboardModifiers
         keyCode = AKEYCODE_0;
         break;
     case Qt::Key_1:
-    case Qt::Key_Exclam: // !
+    case Qt::Key_Exclam:
         keyCode = AKEYCODE_1;
         break;
     case Qt::Key_2:
@@ -334,19 +316,19 @@ AndroidKeycode InputConvertNormal::convertKeyCode(int key, Qt::KeyboardModifiers
         keyCode = AKEYCODE_3;
         break;
     case Qt::Key_4:
-    case Qt::Key_Dollar: //$
+    case Qt::Key_Dollar:
         keyCode = AKEYCODE_4;
         break;
     case Qt::Key_5:
-    case Qt::Key_Percent: // %
+    case Qt::Key_Percent:
         keyCode = AKEYCODE_5;
         break;
     case Qt::Key_6:
-    case Qt::Key_AsciiCircum: //^
+    case Qt::Key_AsciiCircum:
         keyCode = AKEYCODE_6;
         break;
     case Qt::Key_7:
-    case Qt::Key_Ampersand: //&
+    case Qt::Key_Ampersand:
         keyCode = AKEYCODE_7;
         break;
     case Qt::Key_8:
@@ -358,65 +340,65 @@ AndroidKeycode InputConvertNormal::convertKeyCode(int key, Qt::KeyboardModifiers
     case Qt::Key_Space:
         keyCode = AKEYCODE_SPACE;
         break;
-    case Qt::Key_Comma: //,
-    case Qt::Key_Less:  //<
+    case Qt::Key_Comma:
+    case Qt::Key_Less:
         keyCode = AKEYCODE_COMMA;
         break;
-    case Qt::Key_Period:  //.
-    case Qt::Key_Greater: //>
+    case Qt::Key_Period:
+    case Qt::Key_Greater:
         keyCode = AKEYCODE_PERIOD;
         break;
-    case Qt::Key_Minus:      //-
-    case Qt::Key_Underscore: //_
+    case Qt::Key_Minus:
+    case Qt::Key_Underscore:
         keyCode = AKEYCODE_MINUS;
         break;
-    case Qt::Key_Equal: //=
+    case Qt::Key_Equal:
         keyCode = AKEYCODE_EQUALS;
         break;
-    case Qt::Key_BracketLeft: //[
-    case Qt::Key_BraceLeft:   //{
+    case Qt::Key_BracketLeft:
+    case Qt::Key_BraceLeft:
         keyCode = AKEYCODE_LEFT_BRACKET;
         break;
-    case Qt::Key_BracketRight: //]
-    case Qt::Key_BraceRight:   //}
+    case Qt::Key_BracketRight:
+    case Qt::Key_BraceRight:
         keyCode = AKEYCODE_RIGHT_BRACKET;
         break;
-    case Qt::Key_Backslash: // \ ????
-    case Qt::Key_Bar:       //|
+    case Qt::Key_Backslash:
+    case Qt::Key_Bar:
         keyCode = AKEYCODE_BACKSLASH;
         break;
-    case Qt::Key_Semicolon: //;
-    case Qt::Key_Colon:     //:
+    case Qt::Key_Semicolon:
+    case Qt::Key_Colon:
         keyCode = AKEYCODE_SEMICOLON;
         break;
-    case Qt::Key_Apostrophe: //'
-    case Qt::Key_QuoteDbl:   //"
+    case Qt::Key_Apostrophe:
+    case Qt::Key_QuoteDbl:
         keyCode = AKEYCODE_APOSTROPHE;
         break;
-    case Qt::Key_Slash:    // /
-    case Qt::Key_Question: //?
+    case Qt::Key_Slash:
+    case Qt::Key_Question:
         keyCode = AKEYCODE_SLASH;
         break;
-    case Qt::Key_At: //@
+    case Qt::Key_At:
         keyCode = AKEYCODE_AT;
         break;
-    case Qt::Key_Plus: //+
+    case Qt::Key_Plus:
         keyCode = AKEYCODE_PLUS;
         break;
-    case Qt::Key_QuoteLeft:  //`
-    case Qt::Key_AsciiTilde: //~
+    case Qt::Key_QuoteLeft:
+    case Qt::Key_AsciiTilde:
         keyCode = AKEYCODE_GRAVE;
         break;
-    case Qt::Key_NumberSign: //#
+    case Qt::Key_NumberSign:
         keyCode = AKEYCODE_POUND;
         break;
-    case Qt::Key_ParenLeft: //(
+    case Qt::Key_ParenLeft:
         keyCode = AKEYCODE_NUMPAD_LEFT_PAREN;
         break;
-    case Qt::Key_ParenRight: //)
+    case Qt::Key_ParenRight:
         keyCode = AKEYCODE_NUMPAD_RIGHT_PAREN;
         break;
-    case Qt::Key_Asterisk: //*
+    case Qt::Key_Asterisk:
         keyCode = AKEYCODE_STAR;
         break;
     }
@@ -439,16 +421,5 @@ AndroidMetastate InputConvertNormal::convertMetastate(Qt::KeyboardModifiers modi
     if (modifiers & Qt::MetaModifier) {
         metastate |= AMETA_META_ON;
     }
-    /*
-    if (mod & KMOD_NUM) {
-        metastate |= AMETA_NUM_LOCK_ON;
-    }
-    if (mod & KMOD_CAPS) {
-        metastate |= AMETA_CAPS_LOCK_ON;
-    }
-    if (mod & KMOD_MODE) { // Alt Gr
-        // no mapping?
-    }
-    */
     return static_cast<AndroidMetastate>(metastate);
 }

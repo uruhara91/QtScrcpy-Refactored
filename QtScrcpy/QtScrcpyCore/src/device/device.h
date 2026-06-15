@@ -44,6 +44,8 @@ public:
 
     void registerDeviceObserver(DeviceObserver* observer) override;
     void deRegisterDeviceObserver(DeviceObserver* observer) override;
+    void registerFrameSink(FrameSink* sink) override;
+    void deRegisterFrameSink(FrameSink* sink) override;
 
     [[nodiscard]] bool connectDevice() override;
     void disconnectDevice() override;
@@ -112,6 +114,10 @@ private:
 
     mutable std::shared_mutex m_observerMutex;
     std::vector<DeviceObserver*> m_deviceObservers;
+
+    mutable std::shared_mutex m_frameSinkMutex;
+    FrameSink* m_frameSink = nullptr;
+
     void *m_userData = nullptr;
 };
 

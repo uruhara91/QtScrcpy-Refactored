@@ -29,6 +29,12 @@ public:
     explicit VideoForm(bool framelessWindow = false, bool skin = true, bool showToolBar = true, QWidget *parent = Q_NULLPTR);
     ~VideoForm();
 
+    // Legacy compatibility entry point. Decoded frames use FrameSink directly.
+    void updateRender(int width, int height,
+                      std::span<const uint8_t> dataY,
+                      std::span<const uint8_t> dataU,
+                      std::span<const uint8_t> dataV,
+                      int linesizeY, int linesizeU, int linesizeV);
     void staysOnTop(bool top = true);
     void updateShowSize(const QSize &newSize);
     void setSerial(const QString& serial);
@@ -49,11 +55,17 @@ private:
                      std::span<const uint8_t> dataV,
                      int linesizeY, int linesizeU, int linesizeV) noexcept override;
 
+    void onFrame(int width, int height,
+                 std::span<const uint8_t> dataY,
+                 std::span<const uint8_t> dataU,
+                 std::span<const uint8_t> dataV,
+                 int linesizeY, int linesizeU, int linesizeV) override;
     void updateFPS(quint32 fps) override;
     void grabCursor(bool grab) override;
 
     void scheduleFrameUiUpdate() noexcept;
     void processFrameUiUpdate();
+    void syncFpsCounterState();
 
     void updateStyleSheet(bool vertical);
     QMargins getMargins(bool vertical);
@@ -102,6 +114,7 @@ private:
     bool m_isFullScreen = false;
     bool m_framelessWindow = false;
 
+    std::atomic<bool> m_resizePending = false;
     std::atomic<QYuvOpenGLWidget*> m_frameSinkWidget{nullptr};
     std::atomic<int> m_latestFrameWidth{0};
     std::atomic<int> m_latestFrameHeight{0};
@@ -116,11 +129,20 @@ inline void VideoForm::activateFrameSink() noexcept
     m_latestFrameHeight.store(0, std::memory_order_relaxed);
     m_frameUiUpdatePending.store(false, std::memory_order_relaxed);
     m_frameSinkWidget.store(m_videoWidget.data(), std::memory_order_release);
+
+    QMetaObject::invokeMethod(
+        this,
+        [this]() { syncFpsCounterState(); },
+        Qt::QueuedConnection);
 }
 
 inline void VideoForm::deactivateFrameSink() noexcept
 {
     Q_ASSERT(QThread::currentThread() == thread());
+
+    if (auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial)) {
+        device->setFpsCounterEnabled(false);
+    }
 
     m_frameSinkWidget.store(nullptr, std::memory_order_release);
     m_latestFrameWidth.store(0, std::memory_order_relaxed);
@@ -184,6 +206,7 @@ inline void VideoForm::processFrameUiUpdate()
         if (m_loadingWidget) m_loadingWidget->close();
         if (widget->isHidden()) widget->show();
         updateShowSize(QSize(width, height));
+        syncFpsCounterState();
     }
 
     m_frameUiUpdatePending.store(false, std::memory_order_release);
@@ -192,6 +215,16 @@ inline void VideoForm::processFrameUiUpdate()
         (m_latestFrameWidth.load(std::memory_order_acquire) != width ||
          m_latestFrameHeight.load(std::memory_order_acquire) != height)) {
         scheduleFrameUiUpdate();
+    }
+}
+
+inline void VideoForm::syncFpsCounterState()
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+
+    if (auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial)) {
+        const bool enabled = m_fpsLabel && m_fpsLabel->isVisible();
+        device->setFpsCounterEnabled(enabled);
     }
 }
 

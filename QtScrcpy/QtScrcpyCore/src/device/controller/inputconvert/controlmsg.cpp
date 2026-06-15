@@ -1,11 +1,57 @@
 #include <QDebug>
+#include <algorithm>
+#include <array>
+#include <cstring>
 
-#include "bufferutil.h"
 #include "controlmsg.h"
 
-#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
-#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
-#define CLAMP(V, X, Y) MIN(MAX((V), (X)), (Y))
+namespace {
+
+inline void write16(char *&cursor, quint16 value) noexcept
+{
+    *cursor++ = static_cast<char>(value >> 8);
+    *cursor++ = static_cast<char>(value);
+}
+
+inline void write32(char *&cursor, quint32 value) noexcept
+{
+    *cursor++ = static_cast<char>(value >> 24);
+    *cursor++ = static_cast<char>(value >> 16);
+    *cursor++ = static_cast<char>(value >> 8);
+    *cursor++ = static_cast<char>(value);
+}
+
+inline void write64(char *&cursor, quint64 value) noexcept
+{
+    write32(cursor, static_cast<quint32>(value >> 32));
+    write32(cursor, static_cast<quint32>(value));
+}
+
+inline void writePosition(char *&cursor, const QRect &value) noexcept
+{
+    write32(cursor, static_cast<quint32>(value.left()));
+    write32(cursor, static_cast<quint32>(value.top()));
+    write16(cursor, static_cast<quint16>(value.width()));
+    write16(cursor, static_cast<quint16>(value.height()));
+}
+
+inline quint16 floatToU16fp(float value) noexcept
+{
+    value = std::clamp(value, 0.0f, 1.0f);
+    quint32 converted = static_cast<quint32>(value * 0x1p16f);
+    if (converted >= 0xffff) converted = 0xffff;
+    return static_cast<quint16>(converted);
+}
+
+inline qint16 floatToI16fp(float value) noexcept
+{
+    value = std::clamp(value, -1.0f, 1.0f);
+    qint32 converted = static_cast<qint32>(value * 0x1p15f);
+    if (converted >= 0x7fff) converted = 0x7fff;
+    return static_cast<qint16>(converted);
+}
+
+} // namespace
 
 ControlMsg::ControlMsg(ControlMsgType controlMsgType)
     : QScrcpyEvent(Control)
@@ -15,12 +61,12 @@ ControlMsg::ControlMsg(ControlMsgType controlMsgType)
 
 ControlMsg::~ControlMsg()
 {
-    if (CMT_SET_CLIPBOARD == m_data.type && Q_NULLPTR != m_data.setClipboard.text) {
+    if (CMT_SET_CLIPBOARD == m_data.type && m_data.setClipboard.text) {
         delete[] m_data.setClipboard.text;
-        m_data.setClipboard.text = Q_NULLPTR;
-    } else if (CMT_INJECT_TEXT == m_data.type && Q_NULLPTR != m_data.injectText.text) {
+        m_data.setClipboard.text = nullptr;
+    } else if (CMT_INJECT_TEXT == m_data.type && m_data.injectText.text) {
         delete[] m_data.injectText.text;
-        m_data.injectText.text = Q_NULLPTR;
+        m_data.injectText.text = nullptr;
     }
 }
 
@@ -37,10 +83,9 @@ void ControlMsg::setInjectKeycodeMsgData(AndroidKeyeventAction action,
 
 void ControlMsg::setInjectTextMsgData(const QString &text)
 {
-    const QString clipped = text.left(CONTROL_MSG_INJECT_TEXT_MAX_LENGTH);
-    const QByteArray utf8 = clipped.toUtf8();
+    const QByteArray utf8 = text.left(CONTROL_MSG_INJECT_TEXT_MAX_LENGTH).toUtf8();
     m_data.injectText.text = new char[utf8.size() + 1];
-    memcpy(m_data.injectText.text, utf8.constData(), utf8.size());
+    std::memcpy(m_data.injectText.text, utf8.constData(), static_cast<std::size_t>(utf8.size()));
     m_data.injectText.text[utf8.size()] = '\0';
 }
 
@@ -82,14 +127,13 @@ void ControlMsg::setSetClipboardMsgData(const QString &text, bool paste)
     m_data.setClipboard.sequence = 0;
 
     if (text.isEmpty()) {
-        m_data.setClipboard.text = Q_NULLPTR;
+        m_data.setClipboard.text = nullptr;
         return;
     }
 
-    const QString clipped = text.left(CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH);
-    const QByteArray utf8 = clipped.toUtf8();
+    const QByteArray utf8 = text.left(CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH).toUtf8();
     m_data.setClipboard.text = new char[utf8.size() + 1];
-    memcpy(m_data.setClipboard.text, utf8.constData(), utf8.size());
+    std::memcpy(m_data.setClipboard.text, utf8.constData(), static_cast<std::size_t>(utf8.size()));
     m_data.setClipboard.text[utf8.size()] = '\0';
 }
 
@@ -104,100 +148,103 @@ void ControlMsg::setBackOrScreenOnData(bool down)
                                         : AKEY_EVENT_ACTION_UP;
 }
 
-void ControlMsg::writePosition(QBuffer &buffer, const QRect &value)
+int ControlMsg::serializeTo(std::span<char> output) const noexcept
 {
-    BufferUtil::write32(buffer, value.left());
-    BufferUtil::write32(buffer, value.top());
-    BufferUtil::write16(buffer, value.width());
-    BufferUtil::write16(buffer, value.height());
-}
-
-quint16 ControlMsg::flostToU16fp(float f)
-{
-    Q_ASSERT(f >= 0.0f && f <= 1.0f);
-    quint32 u = f * 0x1p16f;
-    if (u >= 0xffff) u = 0xffff;
-    return static_cast<quint16>(u);
-}
-
-qint16 ControlMsg::flostToI16fp(float f)
-{
-    Q_ASSERT(f >= -1.0f && f <= 1.0f);
-    qint32 i = f * 0x1p15f;
-    Q_ASSERT(i >= -0x8000);
-    if (i >= 0x7fff) {
-        Q_ASSERT(i == 0x8000);
-        i = 0x7fff;
-    }
-    return static_cast<qint16>(i);
-}
-
-QByteArray ControlMsg::serializeData()
-{
-    QByteArray byteArray;
-    QBuffer buffer(&byteArray);
-    buffer.open(QBuffer::WriteOnly);
-    buffer.putChar(m_data.type);
-
+    int required = 1;
     switch (m_data.type) {
-    case CMT_INJECT_KEYCODE:
-        buffer.putChar(m_data.injectKeycode.action);
-        BufferUtil::write32(buffer, m_data.injectKeycode.keycode);
-        BufferUtil::write32(buffer, m_data.injectKeycode.repeat);
-        BufferUtil::write32(buffer, m_data.injectKeycode.metastate);
-        break;
-    case CMT_INJECT_TEXT:
-        BufferUtil::write32(buffer, static_cast<quint32>(strlen(m_data.injectText.text)));
-        buffer.write(m_data.injectText.text, strlen(m_data.injectText.text));
-        break;
-    case CMT_INJECT_TOUCH: {
-        buffer.putChar(m_data.injectTouch.action);
-        BufferUtil::write64(buffer, m_data.injectTouch.id);
-        writePosition(buffer, m_data.injectTouch.position);
-        const quint16 pressure = flostToU16fp(m_data.injectTouch.pressure);
-        BufferUtil::write16(buffer, pressure);
-        BufferUtil::write32(buffer, m_data.injectTouch.actionButtons);
-        BufferUtil::write32(buffer, m_data.injectTouch.buttons);
-        break;
-    }
-    case CMT_INJECT_SCROLL: {
-        writePosition(buffer, m_data.injectScroll.position);
-        float hscrollNorm = CLAMP(m_data.injectScroll.hScroll / 16, -1, 1);
-        float vscrollNorm = CLAMP(m_data.injectScroll.vScroll / 16, -1, 1);
-        BufferUtil::write16(buffer, static_cast<quint16>(flostToI16fp(hscrollNorm)));
-        BufferUtil::write16(buffer, static_cast<quint16>(flostToI16fp(vscrollNorm)));
-        BufferUtil::write32(buffer, m_data.injectScroll.buttons);
-        break;
-    }
+    case CMT_INJECT_KEYCODE: required = 14; break;
+    case CMT_INJECT_TOUCH: required = 32; break;
+    case CMT_INJECT_SCROLL: required = 21; break;
     case CMT_BACK_OR_SCREEN_ON:
-        buffer.putChar(m_data.backOrScreenOn.action);
-        break;
     case CMT_GET_CLIPBOARD:
-        buffer.putChar(m_data.getClipboard.copyKey);
-        break;
-    case CMT_SET_CLIPBOARD:
-        BufferUtil::write64(buffer, m_data.setClipboard.sequence);
-        buffer.putChar(!!m_data.setClipboard.paste);
-        if (m_data.setClipboard.text != Q_NULLPTR) {
-            BufferUtil::write32(buffer, static_cast<quint32>(strlen(m_data.setClipboard.text)));
-            buffer.write(m_data.setClipboard.text, strlen(m_data.setClipboard.text));
-        } else {
-            BufferUtil::write32(buffer, 0);
-        }
-        break;
-    case CMT_SET_DISPLAY_POWER:
-        buffer.putChar(m_data.setDisplayPower.on);
-        break;
+    case CMT_SET_DISPLAY_POWER: required = 2; break;
     case CMT_EXPAND_NOTIFICATION_PANEL:
     case CMT_EXPAND_SETTINGS_PANEL:
     case CMT_COLLAPSE_PANELS:
-    case CMT_ROTATE_DEVICE:
+    case CMT_ROTATE_DEVICE: required = 1; break;
+    case CMT_INJECT_TEXT:
+    case CMT_SET_CLIPBOARD: return -1;
+    default: return 0;
+    }
+
+    if (output.size() < static_cast<std::size_t>(required)) return 0;
+
+    char *cursor = output.data();
+    *cursor++ = static_cast<char>(m_data.type);
+
+    switch (m_data.type) {
+    case CMT_INJECT_KEYCODE:
+        *cursor++ = static_cast<char>(m_data.injectKeycode.action);
+        write32(cursor, static_cast<quint32>(m_data.injectKeycode.keycode));
+        write32(cursor, m_data.injectKeycode.repeat);
+        write32(cursor, static_cast<quint32>(m_data.injectKeycode.metastate));
+        break;
+    case CMT_INJECT_TOUCH:
+        *cursor++ = static_cast<char>(m_data.injectTouch.action);
+        write64(cursor, m_data.injectTouch.id);
+        writePosition(cursor, m_data.injectTouch.position);
+        write16(cursor, floatToU16fp(m_data.injectTouch.pressure));
+        write32(cursor, static_cast<quint32>(m_data.injectTouch.actionButtons));
+        write32(cursor, static_cast<quint32>(m_data.injectTouch.buttons));
+        break;
+    case CMT_INJECT_SCROLL: {
+        writePosition(cursor, m_data.injectScroll.position);
+        const float h = std::clamp(m_data.injectScroll.hScroll / 16.0f, -1.0f, 1.0f);
+        const float v = std::clamp(m_data.injectScroll.vScroll / 16.0f, -1.0f, 1.0f);
+        write16(cursor, static_cast<quint16>(floatToI16fp(h)));
+        write16(cursor, static_cast<quint16>(floatToI16fp(v)));
+        write32(cursor, static_cast<quint32>(m_data.injectScroll.buttons));
+        break;
+    }
+    case CMT_BACK_OR_SCREEN_ON:
+        *cursor++ = static_cast<char>(m_data.backOrScreenOn.action);
+        break;
+    case CMT_GET_CLIPBOARD:
+        *cursor++ = static_cast<char>(m_data.getClipboard.copyKey);
+        break;
+    case CMT_SET_DISPLAY_POWER:
+        *cursor++ = static_cast<char>(m_data.setDisplayPower.on);
         break;
     default:
-        qDebug() << "Unknown event type:" << m_data.type;
         break;
     }
 
-    buffer.close();
-    return byteArray;
+    return required;
+}
+
+QByteArray ControlMsg::serializeData() const
+{
+    std::array<char, INLINE_SERIALIZED_CAPACITY> inlineBuffer{};
+    const int inlineSize = serializeTo(inlineBuffer);
+    if (inlineSize > 0) {
+        return QByteArray(inlineBuffer.data(), inlineSize);
+    }
+
+    if (m_data.type == CMT_INJECT_TEXT) {
+        const char *text = m_data.injectText.text ? m_data.injectText.text : "";
+        const int length = static_cast<int>(std::strlen(text));
+        QByteArray result;
+        result.resize(5 + length);
+        char *cursor = result.data();
+        *cursor++ = static_cast<char>(m_data.type);
+        write32(cursor, static_cast<quint32>(length));
+        std::memcpy(cursor, text, static_cast<std::size_t>(length));
+        return result;
+    }
+
+    if (m_data.type == CMT_SET_CLIPBOARD) {
+        const char *text = m_data.setClipboard.text ? m_data.setClipboard.text : "";
+        const int length = static_cast<int>(std::strlen(text));
+        QByteArray result;
+        result.resize(14 + length);
+        char *cursor = result.data();
+        *cursor++ = static_cast<char>(m_data.type);
+        write64(cursor, m_data.setClipboard.sequence);
+        *cursor++ = static_cast<char>(m_data.setClipboard.paste);
+        write32(cursor, static_cast<quint32>(length));
+        std::memcpy(cursor, text, static_cast<std::size_t>(length));
+        return result;
+    }
+
+    return {};
 }

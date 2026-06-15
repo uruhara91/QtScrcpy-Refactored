@@ -1,66 +1,75 @@
-#include <QDebug>
-#include <QCursor>
-#include <QGuiApplication>
-#include <QTimer>
-#include <QTime>
-#include <QWidget>
-#include <QRandomGenerator>
-#include <QElapsedTimer>
-#include <random>
-#include <cmath>
-#include <QHash>
-
 #include "inputconvertgame.h"
 #include "../controller.h"
 
-// Tidak lagi digunakan untuk boundary check, tapi kita tetap define
-#define CURSOR_POS_CHECK 50
+#include <QCursor>
+#include <QDebug>
+#include <QGuiApplication>
+#include <QTimerEvent>
+#include <algorithm>
+#include <cmath>
+#include <random>
 
-InputConvertGame::InputConvertGame(Controller *controller) : InputConvertNormal(controller) {
-    // Steer Wheel Timer
-    m_ctrlSteerWheel.delayData.timer = new QTimer(this);
-    m_ctrlSteerWheel.delayData.timer->setSingleShot(true);
-    connect(m_ctrlSteerWheel.delayData.timer, &QTimer::timeout, this, &InputConvertGame::onSteerWheelTimer);
+namespace {
+constexpr int MOUSE_MOVE_INTERVAL_MS = 8;
+constexpr int MOUSE_TOUCH_TIMEOUT_MS = 500;
+constexpr double HALF_PI = 1.57079632679489661923;
 
-    // Drag Timer (Pre-allocated, hapus 'new QTimer' dari processKeyDrag)
-    m_dragDelayData.timer = new QTimer(this);
-    m_dragDelayData.timer->setSingleShot(true);
-    connect(m_dragDelayData.timer, &QTimer::timeout, this, &InputConvertGame::onDragTimer);
+std::mt19937 &randomGenerator()
+{
+    thread_local std::mt19937 generator(std::random_device{}());
+    return generator;
+}
 }
 
-InputConvertGame::~InputConvertGame() {}
-
-void InputConvertGame::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
+InputConvertGame::InputConvertGame(Controller *controller)
+    : InputConvertNormal(controller)
 {
-    // Handle switch key
-    if (m_keyMap.isSwitchOnKeyboard() == false && m_keyMap.getSwitchKey() == static_cast<int>(from->button())) {
-        if (from->type() != QEvent::MouseButtonPress) {
-            return;
-        }
-        if (!switchGameMap()) {
-            m_needBackMouseMove = false;
+    m_ctrlSteerWheel.delayData.timer = new QTimer(this);
+    m_ctrlSteerWheel.delayData.timer->setSingleShot(true);
+    connect(m_ctrlSteerWheel.delayData.timer, &QTimer::timeout,
+            this, &InputConvertGame::onSteerWheelTimer);
+
+    m_dragDelayData.timer = new QTimer(this);
+    m_dragDelayData.timer->setSingleShot(true);
+    connect(m_dragDelayData.timer, &QTimer::timeout,
+            this, &InputConvertGame::onDragTimer);
+}
+
+InputConvertGame::~InputConvertGame()
+{
+    releaseAllKeys();
+    emit grabCursor(false);
+    hideMouseCursor(false);
+}
+
+void InputConvertGame::mouseEvent(const QMouseEvent *from,
+                                  const QSize &frameSize,
+                                  const QSize &showSize)
+{
+    if (!from) return;
+
+    if (!m_keyMap.isSwitchOnKeyboard() &&
+        m_keyMap.getSwitchKey() == static_cast<int>(from->button())) {
+        if (from->type() == QEvent::MouseButtonPress) {
+            switchGameMap();
         }
         return;
     }
 
-    if (!m_needBackMouseMove && m_gameMap) {
+    if (m_gameMap && !m_needBackMouseMove) {
         updateSize(frameSize, showSize);
-        // mouse move
-        if (m_keyMap.isValidMouseMoveMap()) {
-            if (processMouseMove(from)) {
-                return;
-            }
-        }
-        // mouse click
-        if (processMouseClick(from)) {
-            return;
-        }
+        if (m_keyMap.isValidMouseMoveMap() && processMouseMove(from)) return;
+        if (processMouseClick(from)) return;
     }
+
     InputConvertNormal::mouseEvent(from, frameSize, showSize);
 }
 
-void InputConvertGame::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
+void InputConvertGame::wheelEvent(const QWheelEvent *from,
+                                  const QSize &frameSize,
+                                  const QSize &showSize)
 {
+    if (!from) return;
     if (m_gameMap) {
         updateSize(frameSize, showSize);
     } else {
@@ -68,83 +77,90 @@ void InputConvertGame::wheelEvent(const QWheelEvent *from, const QSize &frameSiz
     }
 }
 
-void InputConvertGame::keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize)
+void InputConvertGame::keyEvent(const QKeyEvent *from,
+                                const QSize &frameSize,
+                                const QSize &showSize)
 {
-    // Handle switch key
+    if (!from) return;
+
     if (m_keyMap.isSwitchOnKeyboard() && m_keyMap.getSwitchKey() == from->key()) {
-        if (QEvent::KeyPress != from->type()) {
-            return;
-        }
-        if (!switchGameMap()) {
-            m_needBackMouseMove = false;
+        if (from->type() == QEvent::KeyPress && !from->isAutoRepeat()) {
+            switchGameMap();
         }
         return;
     }
 
     const KeyMap::KeyMapNode &node = m_keyMap.getKeyMapNodeKey(from->key());
-    // Handle special keys: keys that can release the mouse
-    if (m_needBackMouseMove && KeyMap::KMT_CLICK == node.type && node.data.click.switchMap) {
+    if (m_needBackMouseMove && node.type == KeyMap::KMT_CLICK && node.data.click.switchMap) {
         updateSize(frameSize, showSize);
-        // Qt::Key_Tab Qt::Key_M for PUBG mobile
-        processKeyClick(node.data.click.keyNode.pos, false, node.data.click.switchMap, from);
+        processKeyClick(node.data.click.keyNode.pos, false, true, from);
         return;
     }
 
-    if (m_gameMap) {
-        updateSize(frameSize, showSize);
-        if (!from || from->isAutoRepeat()) {
-            return;
-        }
-
-        // small eyes
-        if (m_keyMap.isValidMouseMoveMap() && from->key() == m_keyMap.getMouseMoveMap().data.mouseMove.smallEyes.key) {
-            m_ctrlMouseMove.smallEyes = (QEvent::KeyPress == from->type());
-
-            if (QEvent::KeyPress == from->type()) {
-                m_processMouseMove = false;
-                int delay = 30;
-                QTimer::singleShot(delay, this, [this]() { mouseMoveStopTouch(); });
-                QTimer::singleShot(delay * 2, this, [this]() {
-                    mouseMoveStartTouch(nullptr);
-                    m_processMouseMove = true;
-                });
-
-                stopMouseMoveTimer();
-            } else {
-                mouseMoveStopTouch();
-                mouseMoveStartTouch(nullptr);
-            }
-            return;
-        }
-
-        switch (node.type) {
-        // Handle steer wheel
-        case KeyMap::KMT_STEER_WHEEL:
-            processSteerWheel(node, from);
-            return;
-        // Handle normal click
-        case KeyMap::KMT_CLICK:
-            processKeyClick(node.data.click.keyNode.pos, false, node.data.click.switchMap, from);
-            processAndroidKey(node.data.click.keyNode.androidKey, from);
-            return;
-        case KeyMap::KMT_CLICK_TWICE:
-            processKeyClick(node.data.clickTwice.keyNode.pos, true, false, from);
-            processAndroidKey(node.data.clickTwice.keyNode.androidKey, from);
-            return;
-        case KeyMap::KMT_CLICK_MULTI:
-            processKeyClickMulti(node.data.clickMulti.keyNode.delayClickNodes, node.data.clickMulti.keyNode.delayClickNodesCount, from);
-            return;
-        case KeyMap::KMT_DRAG:
-            processKeyDrag(node.data.drag.keyNode.pos, node.data.drag.keyNode.extendPos,
-                         node.data.drag.startDelay, node.data.drag.dragSpeed, from);
-            return;
-        case KeyMap::KMT_ANDROID_KEY:
-            processAndroidKey(node.data.androidKey.keyNode.androidKey, from);
-        default:
-            break;
-        }
-    } else {
+    if (!m_gameMap) {
         InputConvertNormal::keyEvent(from, frameSize, showSize);
+        return;
+    }
+
+    updateSize(frameSize, showSize);
+    if (from->isAutoRepeat()) return;
+
+    if (m_keyMap.isValidMouseMoveMap() &&
+        from->key() == m_keyMap.getMouseMoveMap().data.mouseMove.smallEyes.key) {
+        m_ctrlMouseMove.smallEyes = from->type() == QEvent::KeyPress;
+        invalidatePendingActions();
+        const std::uint64_t epoch = m_actionEpoch;
+
+        if (m_ctrlMouseMove.smallEyes) {
+            m_processMouseMove = false;
+            stopMouseMoveTimer();
+            QTimer::singleShot(30, this, [this, epoch]() {
+                if (epoch != m_actionEpoch || !m_gameMap) return;
+                mouseMoveStopTouch();
+            });
+            QTimer::singleShot(60, this, [this, epoch]() {
+                if (epoch != m_actionEpoch || !m_gameMap) return;
+                mouseMoveStartTouch();
+                m_processMouseMove = true;
+            });
+        } else {
+            mouseMoveStopTouch();
+            mouseMoveStartTouch();
+            m_processMouseMove = true;
+        }
+        return;
+    }
+
+    switch (node.type) {
+    case KeyMap::KMT_STEER_WHEEL:
+        processSteerWheel(node, from);
+        return;
+    case KeyMap::KMT_CLICK:
+        processKeyClick(node.data.click.keyNode.pos, false,
+                        node.data.click.switchMap, from);
+        processAndroidKey(node.data.click.keyNode.androidKey, from);
+        return;
+    case KeyMap::KMT_CLICK_TWICE:
+        processKeyClick(node.data.clickTwice.keyNode.pos, true, false, from);
+        processAndroidKey(node.data.clickTwice.keyNode.androidKey, from);
+        return;
+    case KeyMap::KMT_CLICK_MULTI:
+        processKeyClickMulti(node.data.clickMulti.keyNode.delayClickNodes,
+                             node.data.clickMulti.keyNode.delayClickNodesCount,
+                             from);
+        return;
+    case KeyMap::KMT_DRAG:
+        processKeyDrag(node.data.drag.keyNode.pos,
+                       node.data.drag.keyNode.extendPos,
+                       node.data.drag.startDelay,
+                       node.data.drag.dragSpeed,
+                       from);
+        return;
+    case KeyMap::KMT_ANDROID_KEY:
+        processAndroidKey(node.data.androidKey.keyNode.androidKey, from);
+        return;
+    default:
+        return;
     }
 }
 
@@ -155,101 +171,113 @@ bool InputConvertGame::isCurrentCustomKeymap()
 
 void InputConvertGame::loadKeyMap(const QString &json)
 {
+    const bool wasActive = m_gameMap;
+    if (wasActive) releaseAllKeys();
     m_keyMap.loadKeyMap(json);
+
+    if (wasActive) {
+        const bool captureMouse = m_keyMap.isValidMouseMoveMap() && !m_needBackMouseMove;
+        emit grabCursor(captureMouse);
+        hideMouseCursor(captureMouse);
+    }
 }
 
 void InputConvertGame::updateSize(const QSize &frameSize, const QSize &showSize)
 {
-    if (showSize != m_showSize) {
-        if (m_gameMap && m_keyMap.isValidMouseMoveMap()) {
-            // Force grab cursor to prevent escaping
-            emit grabCursor(true);
-        }
+    if (frameSize.isValid() && !frameSize.isEmpty()) m_frameSize = frameSize;
+    if (showSize.isValid() && !showSize.isEmpty()) m_showSize = showSize;
+}
+
+bool InputConvertGame::sendTouchDownEvent(int id, const QPointF &pos)
+{
+    return sendTouchEvent(id, pos, AMOTION_EVENT_ACTION_DOWN);
+}
+
+bool InputConvertGame::sendTouchMoveEvent(int id, const QPointF &pos)
+{
+    return sendTouchEvent(id, pos, AMOTION_EVENT_ACTION_MOVE);
+}
+
+bool InputConvertGame::sendTouchUpEvent(int id, const QPointF &pos)
+{
+    return sendTouchEvent(id, pos, AMOTION_EVENT_ACTION_UP);
+}
+
+bool InputConvertGame::sendTouchEvent(int id,
+                                      const QPointF &pos,
+                                      AndroidMotioneventAction action)
+{
+    if (id < 0 || id >= MULTI_TOUCH_MAX_NUM ||
+        m_frameSize.width() <= 0 || m_frameSize.height() <= 0 || !m_controller) {
+        return false;
     }
-    m_frameSize = frameSize;
-    m_showSize = showSize;
-}
 
-void InputConvertGame::sendTouchDownEvent(int id, QPointF pos)
-{
-    sendTouchEvent(id, pos, AMOTION_EVENT_ACTION_DOWN);
-}
+    const QPointF safePos = clampRelativePos(pos);
+    const QPoint absolutePos = calcFrameAbsolutePos(safePos).toPoint();
 
-void InputConvertGame::sendTouchMoveEvent(int id, QPointF pos)
-{
-    sendTouchEvent(id, pos, AMOTION_EVENT_ACTION_MOVE);
-}
-
-void InputConvertGame::sendTouchUpEvent(int id, QPointF pos)
-{
-    sendTouchEvent(id, pos, AMOTION_EVENT_ACTION_UP);
-}
-
-void InputConvertGame::sendTouchEvent(int id, QPointF pos, AndroidMotioneventAction action)
-{
-    if (0 > id || MULTI_TOUCH_MAX_NUM - 1 < id) {
-        Q_ASSERT(0);
-        return;
+    if (action == AMOTION_EVENT_ACTION_MOVE &&
+        m_hasLastAbsolutePosition[id] &&
+        m_lastAbsolutePositions[id] == absolutePos) {
+        return true;
     }
-    
-    QPoint absolutePos = calcFrameAbsolutePos(pos).toPoint();
-    static QPoint lastAbsolutePos = absolutePos;
-    if (AMOTION_EVENT_ACTION_MOVE == action && lastAbsolutePos == absolutePos) {
-        return;
-    }
-    lastAbsolutePos = absolutePos;
 
-    // OPTIMASI: Alokasi objek di Stack, jauh lebih cepat dari Heap (new)
     ControlMsg controlMsg(ControlMsg::CMT_INJECT_TOUCH);
-    
     controlMsg.setInjectTouchMsgData(
         static_cast<quint64>(id),
         action,
         static_cast<AndroidMotioneventButtons>(0),
         static_cast<AndroidMotioneventButtons>(0),
         QRect(absolutePos, m_frameSize),
-        AMOTION_EVENT_ACTION_DOWN == action ? 1.0f : 0.0f);
-        
-    // OPTIMASI: Langsung serialize dan kirim ke socket via controller, 
-    // Bypass QCoreApplication::postEvent() !
-    if (m_controller) {
-        m_controller->sendControl(controlMsg.serializeData());
-    }
+        action == AMOTION_EVENT_ACTION_DOWN ? 1.0f : 0.0f);
+
+    if (!m_controller->sendControl(controlMsg.serializeData())) return false;
+
+    m_touchPositions[id] = safePos;
+    m_lastAbsolutePositions[id] = absolutePos;
+    m_hasLastAbsolutePosition[id] = action != AMOTION_EVENT_ACTION_UP;
+    return true;
 }
 
-void InputConvertGame::sendKeyEvent(AndroidKeyeventAction action, AndroidKeycode keyCode) {
-    // OPTIMASI: Alokasi Stack
+void InputConvertGame::sendKeyEvent(AndroidKeyeventAction action,
+                                    AndroidKeycode keyCode)
+{
+    if (!m_controller || keyCode == AKEYCODE_UNKNOWN) return;
+
     ControlMsg controlMsg(ControlMsg::CMT_INJECT_KEYCODE);
-
     controlMsg.setInjectKeycodeMsgData(action, keyCode, 0, AMETA_NONE);
-    
-    // Langsung tembak ke socket
-    if (m_controller) {
-        m_controller->sendControl(controlMsg.serializeData());
-    }
+    m_controller->sendControl(controlMsg.serializeData());
 }
 
-QPointF InputConvertGame::calcFrameAbsolutePos(QPointF relativePos)
+QPointF InputConvertGame::clampRelativePos(const QPointF &pos) const
 {
-    QPointF absolutePos;
-    absolutePos.setX(m_frameSize.width() * relativePos.x());
-    absolutePos.setY(m_frameSize.height() * relativePos.y());
-    return absolutePos;
+    return QPointF(qBound(0.0, pos.x(), 1.0),
+                   qBound(0.0, pos.y(), 1.0));
 }
 
-QPointF InputConvertGame::calcScreenAbsolutePos(QPointF relativePos)
+QPointF InputConvertGame::calcFrameAbsolutePos(const QPointF &relativePos) const
 {
-    QPointF absolutePos;
-    absolutePos.setX(m_showSize.width() * relativePos.x());
-    absolutePos.setY(m_showSize.height() * relativePos.y());
-    return absolutePos;
+    return QPointF(m_frameSize.width() * relativePos.x(),
+                   m_frameSize.height() * relativePos.y());
+}
+
+QPointF InputConvertGame::calcScreenAbsolutePos(const QPointF &relativePos) const
+{
+    return QPointF(m_showSize.width() * relativePos.x(),
+                   m_showSize.height() * relativePos.y());
 }
 
 int InputConvertGame::attachTouchID(int key)
 {
-    for (int i = 0; i < MULTI_TOUCH_MAX_NUM; i++) {
-        if (0 == m_multiTouchID[i]) {
+    if (key == 0 || key == Qt::Key_unknown) return -1;
+
+    const int existing = getTouchID(key);
+    if (existing >= 0) return existing;
+
+    for (int i = 0; i < MULTI_TOUCH_MAX_NUM; ++i) {
+        if (m_multiTouchID[i] == 0) {
             m_multiTouchID[i] = key;
+            m_touchPositions[i] = QPointF(0.5, 0.5);
+            m_hasLastAbsolutePosition[i] = false;
             return i;
         }
     }
@@ -258,414 +286,377 @@ int InputConvertGame::attachTouchID(int key)
 
 void InputConvertGame::detachTouchID(int key)
 {
-    for (int i = 0; i < MULTI_TOUCH_MAX_NUM; i++) {
-        if (key == m_multiTouchID[i]) {
-            m_multiTouchID[i] = 0;
-            return;
-        }
-    }
+    const int id = getTouchID(key);
+    if (id >= 0) detachTouchIDByIndex(id);
 }
 
-int InputConvertGame::getTouchID(int key)
+void InputConvertGame::detachTouchIDByIndex(int id)
 {
-    for (int i = 0; i < MULTI_TOUCH_MAX_NUM; i++) {
-        if (key == m_multiTouchID[i]) {
-            return i;
-        }
+    if (id < 0 || id >= MULTI_TOUCH_MAX_NUM) return;
+    m_multiTouchID[id] = 0;
+    m_touchPositions[id] = QPointF();
+    m_lastAbsolutePositions[id] = QPoint();
+    m_hasLastAbsolutePosition[id] = false;
+}
+
+int InputConvertGame::getTouchID(int key) const
+{
+    if (key == 0 || key == Qt::Key_unknown) return -1;
+    for (int i = 0; i < MULTI_TOUCH_MAX_NUM; ++i) {
+        if (m_multiTouchID[i] == key) return i;
     }
     return -1;
 }
 
-// -------- steer wheel event --------
-
-void InputConvertGame::getDelayQueue(const QPointF& start, const QPointF& end,
-                                     const double& distanceStep, const double& posStepconst,
-                                     quint32 lowestTimer, quint32 highestTimer,
-                                     QVector<QPointF>& pathPos, QVector<quint32>& pathTimer) {
-    
-    double dx = end.x() - start.x();
-    double dy = end.y() - start.y();
-    double totalDistance = std::hypot(dx, dy); // Menggunakan hypot untuk jarak diagonal (lebih aman)
-
-    if (totalDistance < 0.0001) return;
-
-    // Kalkulasi jumlah step (frame sentuhan)
-    double e = (std::abs(dx) > std::abs(dy)) ? std::abs(dx) : std::abs(dy);
-    int steps = static_cast<int>(e / distanceStep);
-    if (steps < 2) steps = 2; // Minimal 2 step agar kurva bisa terbentuk
-
+void InputConvertGame::getDelayQueue(const QPointF &start,
+                                     const QPointF &end,
+                                     double distanceStep,
+                                     double positionJitter,
+                                     quint32 lowestTimer,
+                                     quint32 highestTimer,
+                                     QVector<QPointF> &pathPos,
+                                     QVector<quint32> &pathTimer)
+{
     pathPos.clear();
     pathTimer.clear();
+
+    const QPointF safeStart = clampRelativePos(start);
+    const QPointF safeEnd = clampRelativePos(end);
+    const double dx = safeEnd.x() - safeStart.x();
+    const double dy = safeEnd.y() - safeStart.y();
+    const double totalDistance = std::hypot(dx, dy);
+    if (totalDistance < 0.0001 || distanceStep <= 0.0) return;
+
+    int steps = qMax(2, static_cast<int>(qMax(std::abs(dx), std::abs(dy)) / distanceStep));
+    steps = qMin(steps, 512);
     pathPos.reserve(steps);
     pathTimer.reserve(steps);
 
-    // PRNG Super Ringan & Bebas Lock
-    thread_local std::mt19937 gen(std::random_device{}());
-    
-    // ---------------------------------------------------------
-    // 1. BEZIER CONTROL POINT (Menciptakan Lengkungan Jempol)
-    // ---------------------------------------------------------
-    // Mencari titik tengah antara start dan end
-    double midX = start.x() + dx / 2.0;
-    double midY = start.y() + dy / 2.0;
+    const double midX = safeStart.x() + dx / 2.0;
+    const double midY = safeStart.y() + dy / 2.0;
+    const double perpX = -dy / totalDistance;
+    const double perpY = dx / totalDistance;
 
-    // Vektor tegak lurus (perpendicular vector) dari garis lintasan
-    double perpX = -dy / totalDistance;
-    double perpY = dx / totalDistance;
+    std::uniform_real_distribution<double> curveDistribution(-0.15, 0.15);
+    double curveFactor = curveDistribution(randomGenerator());
+    if (std::abs(curveFactor) < 0.05) curveFactor = curveFactor < 0.0 ? -0.05 : 0.05;
 
-    // Randomize kekuatan lengkungan (5% sampai 15% dari total jarak)
-    // Bisa melengkung ke kiri/atas (positif) atau kanan/bawah (negatif)
-    std::uniform_real_distribution<double> curveDist(-0.15, 0.15);
-    double curveFactor = curveDist(gen);
-    
-    // Jangan sampai curve 0 (garis lurus), berikan minimum lengkungan
-    if (std::abs(curveFactor) < 0.05) {
-        curveFactor = (curveFactor < 0) ? -0.05 : 0.05;
-    }
-    
-    double offsetLength = totalDistance * curveFactor;
+    const double offsetLength = totalDistance * curveFactor;
+    const double controlX = midX + perpX * offsetLength;
+    const double controlY = midY + perpY * offsetLength;
 
-    // Posisi Control Point (P1) dari Bezier Curve
-    double cpX = midX + (perpX * offsetLength);
-    double cpY = midY + (perpY * offsetLength);
+    std::uniform_real_distribution<double> jitterDistribution(-positionJitter, positionJitter);
+    if (highestTimer < lowestTimer) std::swap(highestTimer, lowestTimer);
+    std::uniform_int_distribution<quint32> timeDistribution(lowestTimer, highestTimer);
 
-    // ---------------------------------------------------------
-    // 2. GENERATE TITIK BEZIER & HUMAN JITTER
-    // ---------------------------------------------------------
-    std::uniform_real_distribution<double> jitterDist(-posStepconst, posStepconst);
-    std::uniform_int_distribution<quint32> baseTimeDist(lowestTimer, highestTimer);
+    for (int i = 1; i <= steps; ++i) {
+        const double t = static_cast<double>(i) / steps;
+        const double eased = std::sin(t * HALF_PI);
+        const double u = 1.0 - eased;
+        const double x = u * u * safeStart.x() +
+                         2.0 * u * eased * controlX +
+                         eased * eased * safeEnd.x();
+        const double y = u * u * safeStart.y() +
+                         2.0 * u * eased * controlY +
+                         eased * eased * safeEnd.y();
 
-    for (int i = 1; i <= steps; i++) {
-        // Parameter t berjalan dari 0.0 ke 1.0
-        double t = static_cast<double>(i) / steps;
+        pathPos.append(clampRelativePos(QPointF(
+            x + jitterDistribution(randomGenerator()),
+            y + jitterDistribution(randomGenerator()))));
 
-        // Easing Function (Membuat gerak melambat di akhir)
-        // Mengubah t menjadi t_ease agar sentuhan lebih natural
-        double t_ease = std::sin(t * M_PI_2); 
-
-        // Rumus Quadratic Bezier: B(t) = (1-t)^2 P0 + 2(1-t)t P1 + t^2 P2
-        double u = 1.0 - t_ease;
-        double bx = (u * u * start.x()) + (2.0 * u * t_ease * cpX) + (t_ease * t_ease * end.x());
-        double by = (u * u * start.y()) + (2.0 * u * t_ease * cpY) + (t_ease * t_ease * end.y());
-
-        // Tambahkan micro-jitter (getaran alami urat tangan/layar HP)
-        QPointF finalPos(bx + jitterDist(gen), by + jitterDist(gen));
-        pathPos.append(finalPos);
-
-        // ---------------------------------------------------------
-        // 3. WAKTU SENTUHAN (Temporal Humanization)
-        // ---------------------------------------------------------
-        // Jari mendarat cepat, menggeser wajar, lalu melambat saat mau lepas (ngerem)
-        quint32 delay = baseTimeDist(gen);
-        if (i > steps * 0.8) {
-            // 20% langkah terakhir, jari melambat (delay bertambah)
-            delay += std::uniform_int_distribution<quint32>(1, 4)(gen);
+        quint32 delay = timeDistribution(randomGenerator());
+        if (i > static_cast<int>(steps * 0.8)) {
+            delay += std::uniform_int_distribution<quint32>(1, 4)(randomGenerator());
         }
-        
-        pathTimer.append(delay);
+        pathTimer.append(qMax<quint32>(1, delay));
     }
 }
 
-void InputConvertGame::onSteerWheelTimer() {
-    if(m_ctrlSteerWheel.delayData.stepIndex >= m_ctrlSteerWheel.delayData.pathPos.size()) {
-        return;
-    }
-    
-    int id = getTouchID(m_ctrlSteerWheel.touchKey);
-    if (id == -1) return;
-
-    m_ctrlSteerWheel.delayData.currentPos = m_ctrlSteerWheel.delayData.pathPos[m_ctrlSteerWheel.delayData.stepIndex];
-    quint32 nextTimer = m_ctrlSteerWheel.delayData.pathTimer[m_ctrlSteerWheel.delayData.stepIndex];
-    
-    sendTouchMoveEvent(id, m_ctrlSteerWheel.delayData.currentPos);
-    
-    m_ctrlSteerWheel.delayData.stepIndex++;
-
-    if(m_ctrlSteerWheel.delayData.stepIndex >= m_ctrlSteerWheel.delayData.pathPos.size() && m_ctrlSteerWheel.delayData.pressedNum == 0) {
-        sendTouchUpEvent(id, m_ctrlSteerWheel.delayData.currentPos);
-        detachTouchID(m_ctrlSteerWheel.touchKey);
-        return;
-    }
-
-    if(m_ctrlSteerWheel.delayData.stepIndex < m_ctrlSteerWheel.delayData.pathPos.size()) {
-        m_ctrlSteerWheel.delayData.timer->start(nextTimer);
-    }
-}
-
-void InputConvertGame::processSteerWheel(const KeyMap::KeyMapNode &node, const QKeyEvent *from)
+void InputConvertGame::onSteerWheelTimer()
 {
-    int key = from->key();
-    bool flag = from->type() == QEvent::KeyPress;
-    // identify keys
-    if (key == node.data.steerWheel.up.key) {
-        m_ctrlSteerWheel.pressedUp = flag;
-    } else if (key == node.data.steerWheel.right.key) {
-        m_ctrlSteerWheel.pressedRight = flag;
-    } else if (key == node.data.steerWheel.down.key) {
-        m_ctrlSteerWheel.pressedDown = flag;
-    } else { // left
-        m_ctrlSteerWheel.pressedLeft = flag;
+    auto &delay = m_ctrlSteerWheel.delayData;
+    if (!m_gameMap || delay.stepIndex < 0 ||
+        delay.stepIndex >= delay.pathPos.size() ||
+        delay.stepIndex >= delay.pathTimer.size()) {
+        return;
     }
 
-    // calc offset and pressed number
-    QPointF offset(0.0, 0.0);
-    int pressedNum = 0;
+    const int id = getTouchID(m_ctrlSteerWheel.touchKey);
+    if (id < 0) {
+        stopSteerWheel(false);
+        return;
+    }
+
+    delay.currentPos = delay.pathPos[delay.stepIndex];
+    const quint32 nextDelay = delay.pathTimer[delay.stepIndex];
+    sendTouchMoveEvent(id, delay.currentPos);
+    ++delay.stepIndex;
+
+    if (delay.stepIndex < delay.pathPos.size()) {
+        delay.timer->start(static_cast<int>(nextDelay));
+    } else if (delay.pressedNum == 0) {
+        stopSteerWheel(true);
+    }
+}
+
+void InputConvertGame::processSteerWheel(const KeyMap::KeyMapNode &node,
+                                         const QKeyEvent *from)
+{
+    if (!from) return;
+
+    const bool pressed = from->type() == QEvent::KeyPress;
+    const int key = from->key();
+    if (key == node.data.steerWheel.up.key) m_ctrlSteerWheel.pressedUp = pressed;
+    else if (key == node.data.steerWheel.right.key) m_ctrlSteerWheel.pressedRight = pressed;
+    else if (key == node.data.steerWheel.down.key) m_ctrlSteerWheel.pressedDown = pressed;
+    else if (key == node.data.steerWheel.left.key) m_ctrlSteerWheel.pressedLeft = pressed;
+    else return;
+
+    QPointF offset;
+    int pressedCount = 0;
     if (m_ctrlSteerWheel.pressedUp) {
-        ++pressedNum;
+        ++pressedCount;
         offset.ry() -= node.data.steerWheel.up.extendOffset;
     }
     if (m_ctrlSteerWheel.pressedRight) {
-        ++pressedNum;
+        ++pressedCount;
         offset.rx() += node.data.steerWheel.right.extendOffset;
     }
     if (m_ctrlSteerWheel.pressedDown) {
-        ++pressedNum;
+        ++pressedCount;
         offset.ry() += node.data.steerWheel.down.extendOffset;
     }
     if (m_ctrlSteerWheel.pressedLeft) {
-        ++pressedNum;
+        ++pressedCount;
         offset.rx() -= node.data.steerWheel.left.extendOffset;
     }
-    m_ctrlSteerWheel.delayData.pressedNum = pressedNum;
 
-    // last key release and timer no active, active timer to detouch
-    if (pressedNum == 0) {
-        if (m_ctrlSteerWheel.delayData.timer->isActive()) {
-            m_ctrlSteerWheel.delayData.timer->stop();
-        }
-        m_ctrlSteerWheel.delayData.pathTimer.clear();
-        m_ctrlSteerWheel.delayData.pathPos.clear();
-        m_ctrlSteerWheel.delayData.stepIndex = 0;
+    auto &delay = m_ctrlSteerWheel.delayData;
+    delay.pressedNum = pressedCount;
+    delay.timer->stop();
+    delay.pathPos.clear();
+    delay.pathTimer.clear();
+    delay.stepIndex = 0;
 
-        sendTouchUpEvent(getTouchID(m_ctrlSteerWheel.touchKey), m_ctrlSteerWheel.delayData.currentPos);
-        detachTouchID(m_ctrlSteerWheel.touchKey);
+    if (pressedCount == 0) {
+        stopSteerWheel(true);
         return;
     }
 
-    // process steer wheel key event
-    m_ctrlSteerWheel.delayData.timer->stop();
-    m_ctrlSteerWheel.delayData.pathTimer.clear();
-    m_ctrlSteerWheel.delayData.pathPos.clear();
-    m_ctrlSteerWheel.delayData.stepIndex = 0;
-
-    // first press, get key and touch down
-    if (pressedNum == 1 && flag) {
-        m_ctrlSteerWheel.touchKey = from->key();
-        int id = attachTouchID(m_ctrlSteerWheel.touchKey);
-        sendTouchDownEvent(id, node.data.steerWheel.centerPos);
-
-        getDelayQueue(node.data.steerWheel.centerPos, node.data.steerWheel.centerPos+offset,
-                      0.01f, 0.002f, 2, 8,
-                      m_ctrlSteerWheel.delayData.pathPos,
-                      m_ctrlSteerWheel.delayData.pathTimer);
-    } else {
-        getDelayQueue(m_ctrlSteerWheel.delayData.currentPos, node.data.steerWheel.centerPos+offset,
-                      0.01f, 0.002f, 2, 8,
-                      m_ctrlSteerWheel.delayData.pathPos,
-                      m_ctrlSteerWheel.delayData.pathTimer);
+    if (getTouchID(m_ctrlSteerWheel.touchKey) < 0) {
+        m_ctrlSteerWheel.touchKey = key;
+        const int id = attachTouchID(key);
+        if (id < 0) {
+            stopSteerWheel(false);
+            return;
+        }
+        delay.currentPos = clampRelativePos(node.data.steerWheel.centerPos);
+        if (!sendTouchDownEvent(id, delay.currentPos)) {
+            detachTouchIDByIndex(id);
+            stopSteerWheel(false);
+            return;
+        }
     }
-    
-    if (!m_ctrlSteerWheel.delayData.pathPos.isEmpty()) {
-        m_ctrlSteerWheel.delayData.timer->start(1);
-    }
-    return;
+
+    const QPointF target = clampRelativePos(node.data.steerWheel.centerPos + offset);
+    getDelayQueue(delay.currentPos, target, 0.01, 0.002, 2, 8,
+                  delay.pathPos, delay.pathTimer);
+    if (!delay.pathPos.isEmpty()) delay.timer->start(1);
 }
 
-// -------- key event --------
-
-QPointF InputConvertGame::addJitter(const QPointF& pos) {
-    thread_local std::mt19937 gen(std::random_device{}());
-    // Radius sesuai: -0.002 sampai 0.002
-    std::uniform_real_distribution<double> dist(-0.002, 0.002); 
-    
-    return QPointF(pos.x() + dist(gen), pos.y() + dist(gen));
-}
-
-void InputConvertGame::processKeyClick(const QPointF &clickPos, bool clickTwice, bool switchMap, const QKeyEvent *from)
+QPointF InputConvertGame::addJitter(const QPointF &pos)
 {
-    if (switchMap && QEvent::KeyRelease == from->type()) {
+    std::uniform_real_distribution<double> distribution(-0.002, 0.002);
+    return clampRelativePos(QPointF(
+        pos.x() + distribution(randomGenerator()),
+        pos.y() + distribution(randomGenerator())));
+}
+
+void InputConvertGame::processKeyClick(const QPointF &clickPos,
+                                       bool clickTwice,
+                                       bool switchMap,
+                                       const QKeyEvent *from)
+{
+    if (!from) return;
+
+    const int key = from->key();
+    if (switchMap && from->type() == QEvent::KeyRelease) {
         m_needBackMouseMove = !m_needBackMouseMove;
-        hideMouseCursor(!m_needBackMouseMove);
+        const bool captureMouse = m_gameMap && m_keyMap.isValidMouseMoveMap() && !m_needBackMouseMove;
+        emit grabCursor(captureMouse);
+        hideMouseCursor(captureMouse);
     }
 
-    int key = from->key();
+    if (from->type() == QEvent::KeyPress) {
+        const QPointF position = addJitter(clickPos);
+        m_keyJitterMap.insert(key, position);
 
-    if (QEvent::KeyPress == from->type()) {
-        // Hasilkan Jitter lalu SIMPAN di hash map berdasarkan tombol
-        QPointF jitterPos = addJitter(clickPos);
-        m_keyJitterMap[key] = jitterPos; 
-
-        int id = attachTouchID(key);
-        sendTouchDownEvent(id, jitterPos);
-        
-        if (clickTwice) {
-            sendTouchUpEvent(getTouchID(key), jitterPos);
-            detachTouchID(key);
+        const int id = attachTouchID(key);
+        if (id < 0 || !sendTouchDownEvent(id, position)) {
+            if (id >= 0) detachTouchIDByIndex(id);
+            m_keyJitterMap.remove(key);
+            return;
         }
-    } else if (QEvent::KeyRelease == from->type()) {
-        // Ambil posisi Jitter yang tadi disimpan, kalau tidak ada, pakai posisi dasar
-        QPointF jitterPos = m_keyJitterMap.value(key, clickPos);
 
         if (clickTwice) {
-            int id = attachTouchID(key);
-            // Jitter baru khusus untuk klik kedua dari clickTwice
-            jitterPos = addJitter(clickPos); 
-            sendTouchDownEvent(id, jitterPos);
+            sendTouchUpEvent(id, position);
+            detachTouchIDByIndex(id);
         }
-        
-        sendTouchUpEvent(getTouchID(key), jitterPos);
-        detachTouchID(key);
-        
-        // Bersihkan memori hash map setelah tombol dilepas
-        m_keyJitterMap.remove(key);
+        return;
     }
+
+    if (from->type() != QEvent::KeyRelease) return;
+
+    QPointF position = m_keyJitterMap.value(key, clampRelativePos(clickPos));
+    if (clickTwice) {
+        position = addJitter(clickPos);
+        const int secondId = attachTouchID(key);
+        if (secondId >= 0 && sendTouchDownEvent(secondId, position)) {
+            sendTouchUpEvent(secondId, position);
+            detachTouchIDByIndex(secondId);
+        }
+    } else {
+        const int id = getTouchID(key);
+        if (id >= 0) {
+            sendTouchUpEvent(id, position);
+            detachTouchIDByIndex(id);
+        }
+    }
+    m_keyJitterMap.remove(key);
 }
 
-void InputConvertGame::processKeyClickMulti(const KeyMap::DelayClickNode *nodes, const int count, const QKeyEvent *from)
+void InputConvertGame::processKeyClickMulti(const KeyMap::DelayClickNode *nodes,
+                                            int count,
+                                            const QKeyEvent *from)
 {
-    if (QEvent::KeyPress != from->type()) {
-        return;
-    }
+    if (!nodes || !from || from->type() != QEvent::KeyPress || count <= 0) return;
 
-    int key = from->key();
-    int delay = 0;
+    count = qMin(count, MAX_DELAY_CLICK_NODES);
+    const int key = from->key();
+    const std::uint64_t epoch = m_actionEpoch;
+    int delayMs = 0;
+    std::uniform_int_distribution<int> dwellDistribution(35, 75);
 
-    for (int i = 0; i < count; i++) {
-        delay += nodes[i].delay;
-        
-        // Tiap aksi makro punya posisi Jitter beda-beda (humanized scatter)
-        QPointF clickPos = addJitter(nodes[i].pos); 
+    for (int i = 0; i < count; ++i) {
+        delayMs += qMax(0, nodes[i].delay);
+        const QPointF position = addJitter(nodes[i].pos);
 
-        QTimer::singleShot(delay, this, [this, key, clickPos]() {
-            int id = attachTouchID(key);
-            sendTouchDownEvent(id, clickPos);
+        QTimer::singleShot(delayMs, this, [this, epoch, key, position]() {
+            if (epoch != m_actionEpoch || !m_gameMap || getTouchID(key) >= 0) return;
+            const int id = attachTouchID(key);
+            if (id < 0 || !sendTouchDownEvent(id, position)) {
+                if (id >= 0) detachTouchIDByIndex(id);
+            }
         });
 
-        // WAKTU JARIMU MENEMPEL SEKARANG DIACAK (Humanized Dwell Time)
-        // Bukan lagi statis 20ms
-        thread_local std::mt19937 gen(std::random_device{}());
-        std::uniform_int_distribution<int> dwellDist(35, 75); // Antara 35ms - 75ms
-        delay += dwellDist(gen); 
-        
-        QTimer::singleShot(delay, this, [this, key, clickPos]() {
-            int id = getTouchID(key);
-            sendTouchUpEvent(id, clickPos);
-            detachTouchID(key);
+        delayMs += dwellDistribution(randomGenerator());
+        QTimer::singleShot(delayMs, this, [this, epoch, key, position]() {
+            if (epoch != m_actionEpoch) return;
+            const int id = getTouchID(key);
+            if (id >= 0) {
+                sendTouchUpEvent(id, position);
+                detachTouchIDByIndex(id);
+            }
         });
     }
 }
 
-void InputConvertGame::onDragTimer() {
-    if(m_dragDelayData.stepIndex >= m_dragDelayData.pathPos.size()) {
+void InputConvertGame::onDragTimer()
+{
+    if (!m_gameMap || m_dragDelayData.stepIndex < 0 ||
+        m_dragDelayData.stepIndex >= m_dragDelayData.pathPos.size() ||
+        m_dragDelayData.stepIndex >= m_dragDelayData.pathTimer.size()) {
         return;
     }
-    
-    int id = getTouchID(m_dragDelayData.pressKey);
-    if (id == -1) return;
+
+    const int id = getTouchID(m_dragDelayData.pressKey);
+    if (id < 0) {
+        stopDrag(false);
+        return;
+    }
 
     m_dragDelayData.currentPos = m_dragDelayData.pathPos[m_dragDelayData.stepIndex];
-    quint32 nextTimer = m_dragDelayData.pathTimer[m_dragDelayData.stepIndex];
-    
+    const quint32 nextDelay = m_dragDelayData.pathTimer[m_dragDelayData.stepIndex];
     sendTouchMoveEvent(id, m_dragDelayData.currentPos);
+    ++m_dragDelayData.stepIndex;
 
-    m_dragDelayData.stepIndex++;
-
-    if(m_dragDelayData.stepIndex >= m_dragDelayData.pathPos.size()) {
-        sendTouchUpEvent(id, m_dragDelayData.currentPos);
-        detachTouchID(m_dragDelayData.pressKey);
-
-        m_dragDelayData.currentPos = QPointF();
-        m_dragDelayData.pressKey = 0;
-        return;
-    }
-
-    if(m_dragDelayData.stepIndex < m_dragDelayData.pathPos.size()) {
-        m_dragDelayData.timer->start(nextTimer);
+    if (m_dragDelayData.stepIndex < m_dragDelayData.pathPos.size()) {
+        m_dragDelayData.timer->start(static_cast<int>(nextDelay));
+    } else {
+        stopDrag(true);
     }
 }
 
-void InputConvertGame::processKeyDrag(const QPointF &startPos, QPointF endPos, quint32 startDelay, float dragSpeed, const QKeyEvent *from)
+void InputConvertGame::processKeyDrag(const QPointF &startPos,
+                                      const QPointF &endPos,
+                                      quint32 startDelay,
+                                      float dragSpeed,
+                                      const QKeyEvent *from)
 {
-    if (QEvent::KeyPress == from->type()) {
-        // stop last safely without re-allocation
-        if (m_dragDelayData.timer->isActive()) {
-            m_dragDelayData.timer->stop();
-        }
+    if (!from || from->type() != QEvent::KeyPress) return;
 
-        if (m_dragDelayData.pressKey != 0) {
-            sendTouchUpEvent(getTouchID(m_dragDelayData.pressKey), m_dragDelayData.currentPos);
-            detachTouchID(m_dragDelayData.pressKey);
-        }
+    stopDrag(true);
+    const int id = attachTouchID(from->key());
+    const QPointF safeStart = clampRelativePos(startPos);
+    if (id < 0 || !sendTouchDownEvent(id, safeStart)) {
+        if (id >= 0) detachTouchIDByIndex(id);
+        return;
+    }
 
-        // start this
-        int id = attachTouchID(from->key());
-        sendTouchDownEvent(id, startPos);
+    m_dragDelayData.pressKey = from->key();
+    m_dragDelayData.currentPos = safeStart;
+    m_dragDelayData.stepIndex = 0;
 
-        m_dragDelayData.pressKey = from->key();
-        m_dragDelayData.currentPos = startPos;
-        m_dragDelayData.pathPos.clear();
-        m_dragDelayData.pathTimer.clear();
-        m_dragDelayData.stepIndex = 0;
+    const float speed = qBound(0.0f, dragSpeed, 1.0f);
+    const quint32 minimumDelay = static_cast<quint32>(1 + (1.0f - speed) * 29.0f);
+    const quint32 maximumDelay = minimumDelay +
+        static_cast<quint32>((1.0f - speed) * 9.0f) + 1;
 
-        // Clamp dragSpeed to 0-1 range
-        const float speed = qBound(0.0f, static_cast<float>(dragSpeed), 1.0f);
-        
-        // Calculate delays based on dragSpeed
-        const quint32 minDelay = static_cast<quint32>(1 + (1.0f - speed) * 29);  // 1 to 30
-        const quint32 maxDelay = minDelay + static_cast<quint32>((1.0f - speed) * 9) + 1;  // min + (0 to 9) + 1
+    getDelayQueue(safeStart, endPos, 0.01, 0.0005,
+                  minimumDelay, maximumDelay,
+                  m_dragDelayData.pathPos,
+                  m_dragDelayData.pathTimer);
 
-        getDelayQueue(startPos, endPos,
-                      0.01f, 0.0005f,
-                      minDelay,
-                      maxDelay,
-                      m_dragDelayData.pathPos,
-                      m_dragDelayData.pathTimer);
-
-        if (!m_dragDelayData.pathPos.isEmpty()) {
-            m_dragDelayData.timer->start(startDelay);
-        }
+    if (m_dragDelayData.pathPos.isEmpty()) {
+        stopDrag(true);
+    } else {
+        m_dragDelayData.timer->start(static_cast<int>(startDelay));
     }
 }
 
-void InputConvertGame::processAndroidKey(AndroidKeycode androidKey, const QKeyEvent *from)
+void InputConvertGame::processAndroidKey(AndroidKeycode androidKey,
+                                         const QKeyEvent *from)
 {
-    if (AKEYCODE_UNKNOWN == androidKey) {
-        return;
-    }
+    if (!from || androidKey == AKEYCODE_UNKNOWN) return;
 
-    AndroidKeyeventAction action;
-    switch (from->type()) {
-    case QEvent::KeyPress:
-        action = AKEY_EVENT_ACTION_DOWN;
-        break;
-    case QEvent::KeyRelease:
-        action = AKEY_EVENT_ACTION_UP;
-        break;
-    default:
-        return;
+    if (from->type() == QEvent::KeyPress) {
+        sendKeyEvent(AKEY_EVENT_ACTION_DOWN, androidKey);
+    } else if (from->type() == QEvent::KeyRelease) {
+        sendKeyEvent(AKEY_EVENT_ACTION_UP, androidKey);
     }
-
-    sendKeyEvent(action, androidKey);
 }
-
-// -------- mouse event --------
 
 bool InputConvertGame::processMouseClick(const QMouseEvent *from)
 {
+    if (!from) return false;
     const KeyMap::KeyMapNode &node = m_keyMap.getKeyMapNodeMouse(from->button());
-    if (KeyMap::KMT_INVALID == node.type) {
-        return false;
-    }
+    if (node.type == KeyMap::KMT_INVALID) return false;
 
-    if (QEvent::MouseButtonPress == from->type() || QEvent::MouseButtonDblClick == from->type()) {
-        int id = attachTouchID(from->button());
-        sendTouchDownEvent(id, node.data.click.keyNode.pos);
+    const int key = static_cast<int>(from->button());
+    if (from->type() == QEvent::MouseButtonPress ||
+        from->type() == QEvent::MouseButtonDblClick) {
+        const int id = attachTouchID(key);
+        if (id >= 0 && sendTouchDownEvent(id, node.data.click.keyNode.pos)) return true;
+        if (id >= 0) detachTouchIDByIndex(id);
         return true;
     }
-    if (QEvent::MouseButtonRelease == from->type()) {
-        int id = getTouchID(from->button());
-        sendTouchUpEvent(id, node.data.click.keyNode.pos);
-        detachTouchID(from->button());
+
+    if (from->type() == QEvent::MouseButtonRelease) {
+        const int id = getTouchID(key);
+        if (id >= 0) {
+            sendTouchUpEvent(id, node.data.click.keyNode.pos);
+            detachTouchIDByIndex(id);
+        }
         return true;
     }
     return false;
@@ -673,252 +664,258 @@ bool InputConvertGame::processMouseClick(const QMouseEvent *from)
 
 bool InputConvertGame::processMouseMove(const QMouseEvent *from)
 {
-    if (QEvent::MouseMove != from->type()) {
+    if (!from || from->type() != QEvent::MouseMove ||
+        m_showSize.width() <= 0 || m_showSize.height() <= 0) {
         return false;
     }
-    
-    QPoint centerPos(m_showSize.width() / 2, m_showSize.height() / 2);
-    
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    QPoint currentPos = from->pos();
+
+    const QPoint center(m_showSize.width() / 2, m_showSize.height() / 2);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    const QPoint current = from->pos();
 #else
-    QPoint currentPos = from->position().toPoint();
+    const QPoint current = from->position().toPoint();
 #endif
 
-    // Abaikan event sintetis hasil setPos kita sendiri
-    if (currentPos == centerPos && m_ctrlMouseMove.lastPos == QPointF(centerPos)) {
-        return true;
-    }
-
-    // Inisialisasi lastPos pertama kali
+    if (current == center && m_ctrlMouseMove.lastPos == QPointF(center)) return true;
     if (m_ctrlMouseMove.lastPos.isNull()) {
-        m_ctrlMouseMove.lastPos = QPointF(currentPos);
+        m_ctrlMouseMove.lastPos = current;
         return true;
     }
 
-    // Hitung Jarak dari posisi terakhir kursor, BUKAN dari tengah layar!
-    QPointF distance_raw = QPointF(currentPos) - m_ctrlMouseMove.lastPos;
-    m_ctrlMouseMove.lastPos = QPointF(currentPos); // Update untuk event selanjutnya
+    const QPointF delta = QPointF(current) - m_ctrlMouseMove.lastPos;
+    m_ctrlMouseMove.lastPos = current;
 
     if (m_processMouseMove) {
         QPointF speedRatio = m_keyMap.getMouseMoveMap().data.mouseMove.speedRatio;
         if (qFuzzyIsNull(speedRatio.x())) speedRatio.setX(1.0);
         if (qFuzzyIsNull(speedRatio.y())) speedRatio.setY(1.0);
 
-        QPointF distance {distance_raw.x() / speedRatio.x(), distance_raw.y() / speedRatio.y()};
+        m_ctrlMouseMove.lastConverPos.rx() += delta.x() / speedRatio.x() / m_showSize.width();
+        m_ctrlMouseMove.lastConverPos.ry() += delta.y() / speedRatio.y() / m_showSize.height();
 
-        m_ctrlMouseMove.lastConverPos.setX(m_ctrlMouseMove.lastConverPos.x() + distance.x() / m_showSize.width());
-        m_ctrlMouseMove.lastConverPos.setY(m_ctrlMouseMove.lastConverPos.y() + distance.y() / m_showSize.height());
-
-        mouseMoveStartTouch(from);
+        mouseMoveStartTouch();
         startMouseMoveTimer();
 
-        // Safe zone boundary check untuk HP
-        if (m_ctrlMouseMove.lastConverPos.x() < 0.05 || m_ctrlMouseMove.lastConverPos.x() > 0.95 || 
-            m_ctrlMouseMove.lastConverPos.y() < 0.05 || m_ctrlMouseMove.lastConverPos.y() > 0.95) {
-            
+        const bool outsideSafeZone =
+            m_ctrlMouseMove.lastConverPos.x() < 0.05 ||
+            m_ctrlMouseMove.lastConverPos.x() > 0.95 ||
+            m_ctrlMouseMove.lastConverPos.y() < 0.05 ||
+            m_ctrlMouseMove.lastConverPos.y() > 0.95;
+
+        if (outsideSafeZone) {
             if (m_ctrlMouseMove.smallEyes) {
+                invalidatePendingActions();
+                const std::uint64_t epoch = m_actionEpoch;
                 m_processMouseMove = false;
-                int delay = 30;
-                QTimer::singleShot(delay, this, [this]() { mouseMoveStopTouch(); });
-                QTimer::singleShot(delay * 2, this, [this]() {
-                    mouseMoveStartTouch(nullptr);
+                QTimer::singleShot(30, this, [this, epoch]() {
+                    if (epoch != m_actionEpoch || !m_gameMap) return;
+                    mouseMoveStopTouch();
+                });
+                QTimer::singleShot(60, this, [this, epoch]() {
+                    if (epoch != m_actionEpoch || !m_gameMap) return;
+                    mouseMoveStartTouch();
                     m_processMouseMove = true;
                 });
             } else {
                 mouseMoveStopTouch();
-                m_ctrlMouseMove.ignoreCount = 5;
-                moveCursorTo(from, centerPos);
-                m_ctrlMouseMove.lastPos = QPointF(centerPos);
+                moveCursorTo(from, center);
+                m_ctrlMouseMove.lastPos = center;
                 return true;
             }
         }
 
-        if (!m_ctrlMouseMove.paceTimer.isValid()) {
-            m_ctrlMouseMove.paceTimer.start();
-        }
-
-        // THROTTLING PENGIRIMAN SOCKET (~125Hz)
-        if (m_ctrlMouseMove.paceTimer.elapsed() >= 8) { 
-            sendTouchMoveEvent(getTouchID(Qt::ExtraButton24), m_ctrlMouseMove.lastConverPos);
+        if (!m_ctrlMouseMove.paceTimer.isValid()) m_ctrlMouseMove.paceTimer.start();
+        if (m_ctrlMouseMove.paceTimer.elapsed() >= MOUSE_MOVE_INTERVAL_MS) {
+            const int id = getTouchID(Qt::ExtraButton24);
+            if (id >= 0) sendTouchMoveEvent(id, m_ctrlMouseMove.lastConverPos);
             m_ctrlMouseMove.paceTimer.restart();
         }
-
     }
 
-    int diffX = currentPos.x() - centerPos.x();
-    int diffY = currentPos.y() - centerPos.y();
-    
-    if (diffX * diffX + diffY * diffY > 2500) {
-        moveCursorTo(from, centerPos);
-        m_ctrlMouseMove.lastPos = QPointF(centerPos);
+    const int dx = current.x() - center.x();
+    const int dy = current.y() - center.y();
+    if (dx * dx + dy * dy > 2500) {
+        moveCursorTo(from, center);
+        m_ctrlMouseMove.lastPos = center;
     }
-
     return true;
 }
 
-bool InputConvertGame::checkCursorPos(const QMouseEvent *from)
+void InputConvertGame::moveCursorTo(const QMouseEvent *from,
+                                    const QPoint &localPosPixel)
 {
-    Q_UNUSED(from)
-    return false;
-}
-
-void InputConvertGame::moveCursorTo(const QMouseEvent *from, const QPoint &localPosPixel)
-{
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    QPoint posOffset = from->pos() - localPosPixel;
-    QPoint globalPos = from->globalPos();
+    if (!from) return;
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    QPoint offset = from->pos() - localPosPixel;
+    QPoint global = from->globalPos();
 #else
-    QPoint posOffset = from->position().toPoint() - localPosPixel;
-    QPoint globalPos = from->globalPosition().toPoint();
+    QPoint offset = from->position().toPoint() - localPosPixel;
+    QPoint global = from->globalPosition().toPoint();
 #endif
-    globalPos -= posOffset;
-    //qDebug()<<"move cursor to "<<globalPos<<" offset "<<posOffset;
-    QCursor::setPos(globalPos);
+    QCursor::setPos(global - offset);
 }
 
-void InputConvertGame::mouseMoveStartTouch(const QMouseEvent *from)
+void InputConvertGame::mouseMoveStartTouch()
 {
-    Q_UNUSED(from)
-    if (!m_ctrlMouseMove.touching) {
-        QPointF mouseMoveStartPos
-            = m_ctrlMouseMove.smallEyes ? m_keyMap.getMouseMoveMap().data.mouseMove.smallEyes.pos : m_keyMap.getMouseMoveMap().data.mouseMove.startPos;
-        int id = attachTouchID(Qt::ExtraButton24);
-        sendTouchDownEvent(id, mouseMoveStartPos);
-        m_ctrlMouseMove.lastConverPos = mouseMoveStartPos;
-        m_ctrlMouseMove.touching = true;
+    if (m_ctrlMouseMove.touching || !m_keyMap.isValidMouseMoveMap()) return;
+
+    const QPointF start = m_ctrlMouseMove.smallEyes
+        ? m_keyMap.getMouseMoveMap().data.mouseMove.smallEyes.pos
+        : m_keyMap.getMouseMoveMap().data.mouseMove.startPos;
+    const int id = attachTouchID(Qt::ExtraButton24);
+    if (id < 0 || !sendTouchDownEvent(id, start)) {
+        if (id >= 0) detachTouchIDByIndex(id);
+        return;
     }
+
+    m_ctrlMouseMove.lastConverPos = clampRelativePos(start);
+    m_ctrlMouseMove.touching = true;
 }
 
 void InputConvertGame::mouseMoveStopTouch()
 {
-    if (m_ctrlMouseMove.touching) {
-        sendTouchUpEvent(getTouchID(Qt::ExtraButton24), m_ctrlMouseMove.lastConverPos);
-        detachTouchID(Qt::ExtraButton24);
-        m_ctrlMouseMove.touching = false;
+    if (!m_ctrlMouseMove.touching) return;
+    const int id = getTouchID(Qt::ExtraButton24);
+    if (id >= 0) {
+        sendTouchUpEvent(id, m_ctrlMouseMove.lastConverPos);
+        detachTouchIDByIndex(id);
     }
+    m_ctrlMouseMove.touching = false;
 }
 
 void InputConvertGame::startMouseMoveTimer()
 {
     stopMouseMoveTimer();
-    m_ctrlMouseMove.timer = startTimer(500);
+    m_ctrlMouseMove.timer = startTimer(MOUSE_TOUCH_TIMEOUT_MS, Qt::CoarseTimer);
 }
 
 void InputConvertGame::stopMouseMoveTimer()
 {
-    if (0 != m_ctrlMouseMove.timer) {
+    if (m_ctrlMouseMove.timer != 0) {
         killTimer(m_ctrlMouseMove.timer);
         m_ctrlMouseMove.timer = 0;
     }
 }
 
-void InputConvertGame::stopSteerWheel() {
-    // 1. Matikan Timer
-    if (m_ctrlSteerWheel.delayData.timer->isActive()) {
-        m_ctrlSteerWheel.delayData.timer->stop();
-    }
-    m_ctrlSteerWheel.delayData.pathTimer.clear();
-    m_ctrlSteerWheel.delayData.pathPos.clear();
-    m_ctrlSteerWheel.delayData.stepIndex = 0;
+void InputConvertGame::stopSteerWheel(bool releaseTouch)
+{
+    auto &delay = m_ctrlSteerWheel.delayData;
+    if (delay.timer) delay.timer->stop();
 
-    // 2. Lepas Touch Analog
-    if (m_ctrlSteerWheel.touchKey != 0) {
-        int id = getTouchID(m_ctrlSteerWheel.touchKey);
-        if (id != -1) {
-            // Kirim event angkat jari di posisi terakhir
-            sendTouchUpEvent(id, m_ctrlSteerWheel.delayData.currentPos);
-            detachTouchID(m_ctrlSteerWheel.touchKey);
-        }
+    const int id = getTouchID(m_ctrlSteerWheel.touchKey);
+    if (releaseTouch && id >= 0) {
+        sendTouchUpEvent(id, delay.currentPos);
+        detachTouchIDByIndex(id);
     }
 
-    // 3. Reset semua flag
-    m_ctrlSteerWheel.touchKey = 0;
+    delay.pathPos.clear();
+    delay.pathTimer.clear();
+    delay.stepIndex = 0;
+    delay.pressedNum = 0;
+    delay.currentPos = QPointF();
+    m_ctrlSteerWheel.touchKey = Qt::Key_unknown;
     m_ctrlSteerWheel.pressedUp = false;
     m_ctrlSteerWheel.pressedDown = false;
     m_ctrlSteerWheel.pressedLeft = false;
     m_ctrlSteerWheel.pressedRight = false;
-    m_ctrlSteerWheel.delayData.pressedNum = 0;
 }
 
-void InputConvertGame::stopDrag() {
-    // Bersihkan state drag mouse/skill tanpa menghancurkan (delete) QTimer
-    if (m_dragDelayData.timer->isActive()) {
-        m_dragDelayData.timer->stop();
+void InputConvertGame::stopDrag(bool releaseTouch)
+{
+    if (m_dragDelayData.timer) m_dragDelayData.timer->stop();
+
+    const int id = getTouchID(m_dragDelayData.pressKey);
+    if (releaseTouch && id >= 0) {
+        sendTouchUpEvent(id, m_dragDelayData.currentPos);
+        detachTouchIDByIndex(id);
     }
-    
+
     m_dragDelayData.pathPos.clear();
     m_dragDelayData.pathTimer.clear();
     m_dragDelayData.stepIndex = 0;
-
-    if (m_dragDelayData.pressKey != 0) {
-        int id = getTouchID(m_dragDelayData.pressKey);
-        if (id != -1) {
-            sendTouchUpEvent(id, m_dragDelayData.currentPos);
-            detachTouchID(m_dragDelayData.pressKey);
-        }
-        m_dragDelayData.pressKey = 0;
-        m_dragDelayData.currentPos = QPointF();
-    }
+    m_dragDelayData.pressKey = 0;
+    m_dragDelayData.currentPos = QPointF();
 }
 
-void InputConvertGame::releaseAllKeys() {
-    for (int i = 0; i < MULTI_TOUCH_MAX_NUM; i++) {
-        if (m_multiTouchID[i] != 0) {
-            sendTouchUpEvent(i, QPointF(0.5, 0.5));
-            m_multiTouchID[i] = 0;
+void InputConvertGame::resetTouchState()
+{
+    m_multiTouchID.fill(0);
+    m_touchPositions.fill(QPointF());
+    m_lastAbsolutePositions.fill(QPoint());
+    m_hasLastAbsolutePosition.fill(false);
+}
+
+void InputConvertGame::invalidatePendingActions()
+{
+    ++m_actionEpoch;
+}
+
+void InputConvertGame::releaseAllKeys()
+{
+    invalidatePendingActions();
+    stopMouseMoveTimer();
+    if (m_ctrlSteerWheel.delayData.timer) m_ctrlSteerWheel.delayData.timer->stop();
+    if (m_dragDelayData.timer) m_dragDelayData.timer->stop();
+
+    for (int id = 0; id < MULTI_TOUCH_MAX_NUM; ++id) {
+        if (m_multiTouchID[id] != 0) {
+            sendTouchUpEvent(id, m_touchPositions[id]);
         }
     }
-    stopSteerWheel();
-    stopDrag();
-    stopMouseMoveTimer();
-    mouseMoveStopTouch();
+
+    resetTouchState();
+    stopSteerWheel(false);
+    stopDrag(false);
+    m_ctrlMouseMove.touching = false;
+    m_ctrlMouseMove.smallEyes = false;
+    m_ctrlMouseMove.lastConverPos = QPointF();
+    m_ctrlMouseMove.lastPos = QPointF();
+    m_ctrlMouseMove.paceTimer.invalidate();
+    m_keyJitterMap.clear();
+    m_processMouseMove = true;
 }
 
 bool InputConvertGame::switchGameMap()
 {
-    m_gameMap = !m_gameMap;
-    qInfo() << QString("current keymap mode: %1").arg(m_gameMap ? "custom" : "normal");
-
-    if (!m_keyMap.isValidMouseMoveMap()) {
-        return m_gameMap;
-    }
-    
-    emit grabCursor(m_gameMap);
-    hideMouseCursor(m_gameMap);
-
-    if (!m_gameMap) {
+    if (m_gameMap) {
         releaseAllKeys();
+        m_gameMap = false;
+        m_needBackMouseMove = false;
+        emit grabCursor(false);
+        hideMouseCursor(false);
     } else {
-        m_ctrlMouseMove.lastPos = QPointF(); 
+        m_gameMap = true;
+        m_needBackMouseMove = false;
+        m_ctrlMouseMove.lastPos = QPointF();
+        m_ctrlMouseMove.paceTimer.invalidate();
+        const bool captureMouse = m_keyMap.isValidMouseMoveMap();
+        emit grabCursor(captureMouse);
+        hideMouseCursor(captureMouse);
     }
 
+    qInfo() << "current keymap mode:" << (m_gameMap ? "custom" : "normal");
     return m_gameMap;
 }
 
 void InputConvertGame::hideMouseCursor(bool hide)
 {
+    if (hide == m_cursorHidden || !QGuiApplication::instance()) return;
+
     if (hide) {
         QGuiApplication::setOverrideCursor(QCursor(Qt::BlankCursor));
-
-        if (m_controller && m_controller->parent()) {
-             QWidget* view = qobject_cast<QWidget*>(m_controller->parent());
-             if (view) view->grabMouse();
-        }
+        m_cursorHidden = true;
     } else {
         QGuiApplication::restoreOverrideCursor();
-        
-        if (m_controller && m_controller->parent()) {
-             QWidget* view = qobject_cast<QWidget*>(m_controller->parent());
-             if (view) view->releaseMouse();
-        }
+        m_cursorHidden = false;
     }
 }
 
 void InputConvertGame::timerEvent(QTimerEvent *event)
 {
-    if (m_ctrlMouseMove.timer == event->timerId()) {
+    if (event && m_ctrlMouseMove.timer == event->timerId()) {
         stopMouseMoveTimer();
         mouseMoveStopTouch();
+        return;
     }
+    QObject::timerEvent(event);
 }

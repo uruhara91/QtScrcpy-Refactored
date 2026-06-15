@@ -116,8 +116,9 @@ void VideoBuffer::deliverSnapshot(SharedFrame snapshot,
     convert.setDstFrameInfo(width, height, AV_PIX_FMT_RGB32);
     if (!convert.init()) return;
 
-    convert.convert(snapshot.get(), rgbFrame.get());
+    const bool converted = convert.convert(snapshot.get(), rgbFrame.get());
     convert.deInit();
+    if (!converted) return;
 
     for (FrameCallback &callback : callbacks) {
         if (callback) callback(width, height, rgbBuffer.data());

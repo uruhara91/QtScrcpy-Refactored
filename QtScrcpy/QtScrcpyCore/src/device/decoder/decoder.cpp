@@ -5,7 +5,6 @@
 
 #include <QDebug>
 #include <QMutexLocker>
-#include <algorithm>
 #include <utility>
 
 extern "C" {
@@ -65,7 +64,9 @@ bool Decoder::open()
 
     clearPacketQueue();
     m_droppedPackets.store(0, std::memory_order_relaxed);
+    m_recoveryEvents.store(0, std::memory_order_relaxed);
     m_maximumQueueDepth.store(0, std::memory_order_relaxed);
+    m_flushBeforeNextDecode.store(false, std::memory_order_relaxed);
     m_stopping.store(false, std::memory_order_release);
     m_codecOpen.store(true, std::memory_order_release);
 
@@ -95,9 +96,11 @@ void Decoder::close()
     }
 
     const auto dropped = m_droppedPackets.load(std::memory_order_relaxed);
+    const auto recoveries = m_recoveryEvents.load(std::memory_order_relaxed);
     const auto maxDepth = m_maximumQueueDepth.load(std::memory_order_relaxed);
-    if (dropped > 0) {
+    if (dropped > 0 || recoveries > 0) {
         qInfo() << "Decoder stopped. Dropped packets:" << dropped
+                << "recovery events:" << recoveries
                 << "maximum queue depth:" << maxDepth;
     }
 }
@@ -111,6 +114,7 @@ bool Decoder::enqueuePacket(AVPacket *packet)
 
     QQueue<AVPacket *> discarded;
     bool accepted = false;
+    bool recoveryTriggered = false;
     std::size_t depth = 0;
 
     {
@@ -120,11 +124,26 @@ bool Decoder::enqueuePacket(AVPacket *packet)
             return false;
         }
 
-        if (m_packetQueue.size() >= MAX_PACKET_QUEUE_SIZE) {
-            if (packet->flags & AV_PKT_FLAG_KEY) {
+        const bool isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+
+        if (m_waitingForKeyFrame) {
+            if (isKeyFrame) {
                 discarded.swap(m_packetQueue);
                 m_packetQueue.enqueue(packet);
+                m_waitingForKeyFrame = false;
+                m_flushBeforeNextDecode.store(true, std::memory_order_release);
                 accepted = true;
+            }
+        } else if (m_packetQueue.size() >= MAX_PACKET_QUEUE_SIZE) {
+            discarded.swap(m_packetQueue);
+            recoveryTriggered = true;
+
+            if (isKeyFrame) {
+                m_packetQueue.enqueue(packet);
+                m_flushBeforeNextDecode.store(true, std::memory_order_release);
+                accepted = true;
+            } else {
+                m_waitingForKeyFrame = true;
             }
         } else {
             m_packetQueue.enqueue(packet);
@@ -140,6 +159,10 @@ bool Decoder::enqueuePacket(AVPacket *packet)
     while (!discarded.isEmpty()) {
         PacketPool::get().release(discarded.dequeue());
         m_droppedPackets.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    if (recoveryTriggered) {
+        m_recoveryEvents.fetch_add(1, std::memory_order_relaxed);
     }
 
     if (!accepted) {
@@ -174,7 +197,14 @@ void Decoder::run()
             if (!m_packetQueue.isEmpty()) packet = m_packetQueue.dequeue();
         }
 
-        if (packet) decodePacket(packet);
+        if (!packet) continue;
+
+        if (m_flushBeforeNextDecode.exchange(false, std::memory_order_acq_rel)) {
+            if (m_codecCtx) avcodec_flush_buffers(m_codecCtx.get());
+            if (m_recvFrame) av_frame_unref(m_recvFrame);
+        }
+
+        decodePacket(packet);
     }
 }
 
@@ -190,8 +220,22 @@ void Decoder::decodePacket(AVPacket *packet)
         return;
     }
 
-    const int sendResult = avcodec_send_packet(m_codecCtx.get(), packet);
-    if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) return;
+    while (!m_stopping.load(std::memory_order_acquire)) {
+        const int sendResult = avcodec_send_packet(m_codecCtx.get(), packet);
+        if (sendResult == AVERROR(EAGAIN)) {
+            drainDecodedFrames();
+            continue;
+        }
+        if (sendResult < 0) return;
+        break;
+    }
+
+    drainDecodedFrames();
+}
+
+void Decoder::drainDecodedFrames()
+{
+    if (!m_codecCtx || !m_recvFrame) return;
 
     while (!m_stopping.load(std::memory_order_acquire)) {
         const int receiveResult = avcodec_receive_frame(m_codecCtx.get(), m_recvFrame);
@@ -235,6 +279,7 @@ void Decoder::clearPacketQueue()
     {
         QMutexLocker locker(&m_queueMutex);
         pending.swap(m_packetQueue);
+        m_waitingForKeyFrame = false;
     }
 
     while (!pending.isEmpty()) {

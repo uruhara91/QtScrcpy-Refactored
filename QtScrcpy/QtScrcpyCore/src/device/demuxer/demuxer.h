@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QSize>
 #include <QThread>
+#include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <vector>
@@ -23,14 +24,15 @@ public:
     }
 
     AVPacket* acquire() {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_pool.empty()) {
-            return av_packet_alloc();
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_pool.empty()) {
+                AVPacket* packet = m_pool.back();
+                m_pool.pop_back();
+                return packet;
+            }
         }
-
-        AVPacket* packet = m_pool.back();
-        m_pool.pop_back();
-        return packet;
+        return av_packet_alloc();
     }
 
     void release(AVPacket* packet) {

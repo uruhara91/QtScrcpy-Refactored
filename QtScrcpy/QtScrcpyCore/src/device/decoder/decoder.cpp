@@ -22,6 +22,7 @@ Decoder::Decoder(FrameCallback onFrame, QObject *parent)
     , m_vb(std::make_unique<VideoBuffer>())
     , m_onFrame(std::move(onFrame))
 {
+    m_packetQueue.reserve(MAX_PACKET_QUEUE_SIZE);
     m_telemetryEnabled = qEnvironmentVariableIntValue("QTSCRCPY_TELEMETRY") > 0;
 
     if (m_vb) {
@@ -303,7 +304,6 @@ void Decoder::drainDecodedFrames()
                       strideY, strideU, strideV);
         }
 
-        emit newFrame();
         av_frame_unref(m_recvFrame);
     }
 }

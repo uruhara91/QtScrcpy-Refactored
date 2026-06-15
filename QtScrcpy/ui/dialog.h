@@ -9,7 +9,6 @@
 #include <QListWidget>
 #include <QTimer>
 
-
 #include "adbprocess.h"
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
 #include "audio/audiooutput.h"
@@ -60,13 +59,10 @@ private slots:
     void on_serialBox_currentIndexChanged(const QString &arg1);
 
     void on_startAudioBtn_clicked();
-
     void on_stopAudioBtn_clicked();
-
     void on_installSndcpyBtn_clicked();
 
     void on_autoUpdatecheckBox_toggled(bool checked);
-
     void showIpEditMenu(const QPoint &pos);
 
 private:
@@ -98,6 +94,13 @@ private:
     QAction *m_showWindow;
     QAction *m_quit;
     AudioOutput m_audioOutput;
+    QMetaObject::Connection m_audioErrorConnection = QObject::connect(
+        &m_audioOutput,
+        &AudioOutput::errorOccurred,
+        this,
+        [this](const QString &message) {
+            outLog(message, true);
+        });
     QTimer m_autoUpdatetimer;
 };
 

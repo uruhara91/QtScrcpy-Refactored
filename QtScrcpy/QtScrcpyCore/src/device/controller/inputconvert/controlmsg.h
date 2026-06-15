@@ -23,7 +23,6 @@
 #define POINTER_ID_VIRTUAL_MOUSE static_cast<quint64>(-3)
 #define POINTER_ID_VIRTUAL_FINGER static_cast<quint64>(-4)
 
-// ControlMsg
 class ControlMsg : public QScrcpyEvent
 {
 public:
@@ -50,14 +49,14 @@ public:
         GCCK_CUT,
     };
 
-    ControlMsg(ControlMsgType controlMsgType);
-    virtual ~ControlMsg();
+    explicit ControlMsg(ControlMsgType controlMsgType);
+    ~ControlMsg() override;
 
-    void setInjectKeycodeMsgData(AndroidKeyeventAction action, AndroidKeycode keycode, quint32 repeat, AndroidMetastate metastate);
-    void setInjectTextMsgData(QString &text);
-    // id 代表一个触摸点，最多支持10个触摸点[0,9]
-    // action 只能是AMOTION_EVENT_ACTION_DOWN，AMOTION_EVENT_ACTION_UP，AMOTION_EVENT_ACTION_MOVE
-    // position action动作对应的位置
+    void setInjectKeycodeMsgData(AndroidKeyeventAction action,
+                                 AndroidKeycode keycode,
+                                 quint32 repeat,
+                                 AndroidMetastate metastate);
+    void setInjectTextMsgData(const QString &text);
     void setInjectTouchMsgData(
         quint64 id,
         AndroidMotioneventAction action,
@@ -65,9 +64,12 @@ public:
         AndroidMotioneventButtons buttons,
         QRect position,
         float pressure);
-    void setInjectScrollMsgData(QRect position, float hScroll, float vScroll, AndroidMotioneventButtons buttons);
-    void setGetClipboardMsgData(ControlMsg::GetClipboardCopyKey copyKey); 
-    void setSetClipboardMsgData(QString &text, bool paste);
+    void setInjectScrollMsgData(QRect position,
+                                float hScroll,
+                                float vScroll,
+                                AndroidMotioneventButtons buttons);
+    void setGetClipboardMsgData(ControlMsg::GetClipboardCopyKey copyKey);
+    void setSetClipboardMsgData(const QString &text, bool paste);
     void setDisplayPowerData(bool on);
     void setBackOrScreenOnData(bool down);
 
@@ -113,8 +115,7 @@ private:
             } injectScroll;
             struct
             {
-                AndroidKeyeventAction action; // action for the BACK key
-                // screen may only be turned on on ACTION_DOWN
+                AndroidKeyeventAction action;
             } backOrScreenOn;
             struct
             {

@@ -130,7 +130,7 @@ private:
             } setDisplayPower;
         };
 
-        ControlMsgData() {}
+        ControlMsgData() : getClipboard{GCCK_NONE} {}
         ~ControlMsgData() {}
     };
 

@@ -1,15 +1,15 @@
 #ifndef DEVICEMSG_H
 #define DEVICEMSG_H
 
-#include <QBuffer>
+#include <QByteArray>
+#include <QString>
 
 #define DEVICE_MSG_MAX_SIZE (1 << 18) // 256k
 // type: 1 byte; length: 4 bytes
 #define DEVICE_MSG_TEXT_MAX_LENGTH (DEVICE_MSG_MAX_SIZE - 5)
 
-class DeviceMsg : public QObject
+class DeviceMsg
 {
-    Q_OBJECT
 public:
     enum DeviceMsgType
     {
@@ -17,30 +17,20 @@ public:
         DMT_GET_CLIPBOARD = 0,
     };
 
-    explicit DeviceMsg(QObject *parent = nullptr);
-    ~DeviceMsg() override;
+    DeviceMsg() = default;
+    ~DeviceMsg() = default;
 
-    DeviceMsgType type();
-    void getClipboardMsgData(QString &text);
+    [[nodiscard]] DeviceMsgType type() const noexcept;
+    void getClipboardMsgData(QString &text) const;
 
-    qint32 deserialize(const QByteArray &byteArray);
+    // Returns the complete message size, 0 when more bytes are needed, and -1
+    // for malformed/unsupported data. State is committed only for a complete
+    // message, so fragmented socket reads are safe.
+    [[nodiscard]] qint32 deserialize(const QByteArray &byteArray);
 
 private:
-    struct DeviceMsgData
-    {
-        DeviceMsgType type = DMT_NULL;
-        union
-        {
-            struct
-            {
-                char *text = Q_NULLPTR;
-            } clipboardMsg;
-        };
-        DeviceMsgData() {}
-        ~DeviceMsgData() {}
-    };
-
-    DeviceMsgData m_data;
+    DeviceMsgType m_type = DMT_NULL;
+    QByteArray m_clipboardText;
 };
 
 #endif // DEVICEMSG_H

@@ -84,6 +84,7 @@ private:
     std::atomic_flag m_updatePending = ATOMIC_FLAG_INIT;
 
     bool m_isInitialized = false;
+    bool m_telemetryEnabled = false;
     mutable std::mutex m_pboMutex;
     std::atomic<std::uint64_t> m_globalSequence{0};
 

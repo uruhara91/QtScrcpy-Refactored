@@ -32,7 +32,6 @@ endif()
 
 # MacOS
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # mac default arch arm64
     if(NOT CMAKE_OSX_ARCHITECTURES)
         set(CMAKE_OSX_ARCHITECTURES arm64)
     endif()
@@ -51,8 +50,6 @@ endif()
 message("-- [QtScrcpyCore] QSC_DEPLOY_PATH: ${QSC_DEPLOY_PATH}")
 
 # Sources
-
-# adb
 set(QSC_ADB_SOURCES
     src/adb/adbprocessimpl.h
     src/adb/adbprocessimpl.cpp
@@ -60,13 +57,11 @@ set(QSC_ADB_SOURCES
 )
 source_group(src/adb FILES ${QSC_ADB_SOURCES})
 
-# common
 set(QSC_COMMON_SOURCES
     src/common/qscrcpyevent.h
 )
 source_group(src/common FILES ${QSC_COMMON_SOURCES})
 
-# include
 set(QSC_INCLUDE_SOURCES
     include/QtScrcpyCore.h
     include/QtScrcpyCoreDef.h
@@ -74,7 +69,6 @@ set(QSC_INCLUDE_SOURCES
 )
 source_group(include FILES ${QSC_INCLUDE_SOURCES})
 
-# device
 set(QSC_DEVICE_SOURCES
     src/device/device.h
     src/device/device.cpp
@@ -122,7 +116,6 @@ set(QSC_DEVICE_SOURCES
 )
 source_group(src/device FILES ${QSC_DEVICE_SOURCES})
 
-# devicemanage
 set(QSC_DEVICEMANAGE_SOURCES
     src/devicemanage/devicemanage.h
     src/devicemanage/devicemanage.cpp
@@ -162,31 +155,27 @@ target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/device/recorder)
 target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/devicemanage)
 
-# --- PLATFORM SPECIFIC (CLEAN SW STACK) ---
-
-# Windows
+# --- PLATFORM SPECIFIC ---
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(FFMPEG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg")
-    target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${FFMPEG_DIR}/include)
+    target_include_directories(${QSC_PROJECT_NAME} PUBLIC ${FFMPEG_DIR}/include)
     target_link_libraries(QtScrcpyCore PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavcodec.a
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavformat.a
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavutil.a
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswscale.a
-    # FFmpeg statis di Windows butuh system libs ini:
-    secur32 bcrypt mfplat mfuuid ole32 strmiids
-    # Gantikan alokator memori bawaan dengan mimalloc
-    mimalloc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavcodec.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavformat.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavutil.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswscale.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswresample.a
+        secur32 bcrypt mfplat mfuuid ole32 strmiids
+        mimalloc
     )
 endif()
 
-# MacOS
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(FFMPEG_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/${QSC_CPU_ARCH}")
-    target_include_directories(${QSC_PROJECT_NAME} PRIVATE
+    target_include_directories(${QSC_PROJECT_NAME} PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/include
     )
-    target_link_libraries(${QSC_PROJECT_NAME} PRIVATE
+    target_link_libraries(QtScrcpyCore PUBLIC
         ${FFMPEG_LIB_DIR}/libavcodec.a
         ${FFMPEG_LIB_DIR}/libavformat.a
         ${FFMPEG_LIB_DIR}/libavutil.a
@@ -205,7 +194,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         z
         bz2
     )
-    
+
     set(QSC_DEPLOY_PATH "${CMAKE_BINARY_DIR}/bin/${CMAKE_CFG_INTDIR}/${QC_PROJECT_NAME}.app/Contents/MacOS")
     add_custom_command(TARGET ${QSC_PROJECT_NAME} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E make_directory "${QSC_DEPLOY_PATH}/MacOS"
@@ -213,39 +202,31 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     )
 endif()
 
-# Linux (THE OPTIMIZED PART)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    
     set(FFMPEG_STATIC_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib")
 
-    target_include_directories(${QSC_PROJECT_NAME} PRIVATE 
+    target_include_directories(${QSC_PROJECT_NAME} PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/include
     )
 
-    # Link libraries
-    target_link_libraries(${QSC_PROJECT_NAME} PRIVATE
-        # FFmpeg Static
+    target_link_libraries(${QSC_PROJECT_NAME} PUBLIC
         ${FFMPEG_STATIC_LIB_DIR}/libavformat.a
         ${FFMPEG_STATIC_LIB_DIR}/libavcodec.a
         ${FFMPEG_STATIC_LIB_DIR}/libavutil.a
         ${FFMPEG_STATIC_LIB_DIR}/libswscale.a
-        
-        # System
+        ${FFMPEG_STATIC_LIB_DIR}/libswresample.a
         pthread
         z
     )
-    
-    # Copy ADB & Server
+
     get_target_property(QSC_BIN_OUTPUT_PATH ${QSC_PROJECT_NAME} RUNTIME_OUTPUT_DIRECTORY)
-    if (NOT QSC_BIN_OUTPUT_PATH)
+    if(NOT QSC_BIN_OUTPUT_PATH)
         set(QSC_BIN_OUTPUT_PATH ${CMAKE_BINARY_DIR})
     endif()
-    
+
     add_custom_command(TARGET ${QSC_PROJECT_NAME} POST_BUILD
-       # COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/adb/linux/adb" "${QSC_BIN_OUTPUT_PATH}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/scrcpy-server" "${QSC_BIN_OUTPUT_PATH}"
     )
 endif()
 
-# Global Link (Qt)
 target_link_libraries(${QSC_PROJECT_NAME} PUBLIC ${LINK_LIBS})

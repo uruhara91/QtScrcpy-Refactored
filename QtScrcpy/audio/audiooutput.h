@@ -2,85 +2,61 @@
 #define AUDIOOUTPUT_H
 
 #include <QObject>
-#include <QThread>
-#include <QProcess>
-#include <QTcpServer>
-#include <QTcpSocket>
 #include <QPointer>
-#include <QAudioFormat>
+#include <QThread>
+#include <memory>
 
-#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
-class QAudioSink;
-class QMediaDevices;
-#else
-class QAudioOutput;
-#endif
-class QIODevice;
-
-// --- Worker Class (Berjalan di Thread Terpisah) ---
-class AudioServerWorker : public QObject {
+class ScrcpyAudioWorker : public QObject
+{
     Q_OBJECT
 public:
-    explicit AudioServerWorker(int port, QObject *parent = nullptr);
-    ~AudioServerWorker();
+    explicit ScrcpyAudioWorker(QObject *parent = nullptr);
+    ~ScrcpyAudioWorker() override;
 
 public slots:
-    void startServer();
-    void stopServer();
+    void startSession(const QString &serial,
+                      quint16 localPort,
+                      const QString &serverPath,
+                      const QString &serverVersion);
+    void stopSession();
 
 signals:
-    // Menggunakan const reference untuk menghindari copy berlebih
-    void dataReceived(const QByteArray &data);
-    void serverReady(bool success);
-    void clientConnected(const QString &addr);
-    void clientDisconnected();
+    void started();
+    void stopped();
+    void errorOccurred(const QString &message);
 
 private:
-    int m_port;
-    // QPointer mencegah Dangling Pointer jika objek dihapus di tempat lain
-    QPointer<QTcpServer> m_server;
-    QPointer<QTcpSocket> m_client;
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
-// --- Main Controller (Berjalan di Main/UI Thread) ---
 class AudioOutput : public QObject
 {
     Q_OBJECT
 public:
     explicit AudioOutput(QObject *parent = nullptr);
-    ~AudioOutput();
+    ~AudioOutput() override;
 
-    bool start(const QString& serial, int port);
-    bool install(const QString& serial);
+    // Starts a dedicated scrcpy-server audio-only session. The request is
+    // asynchronous; completion is reported through started()/errorOccurred().
+    [[nodiscard]] bool start(const QString &serial, int port = 28200);
     void stop();
 
+    // Retained for source/UI compatibility. Native scrcpy audio needs no APK.
+    [[nodiscard]] bool install(const QString &serial);
+
 signals:
-    void stopRequested();
+    void started();
+    void stopped();
+    void errorOccurred(const QString &message);
 
 private:
-    bool runAdbCommand(const QString& serial, const QStringList& args);
-    bool runAppProcess(const QString& serial, int port);
-    void setupAudioDevice();
-    void cleanupAudioDevice();
-
-private slots:
-    void onDataReceived(const QByteArray &data);
+    [[nodiscard]] QString resolveServerPath() const;
+    [[nodiscard]] QString resolveServerVersion() const;
 
 private:
-    // Thread Worker tetap hidup selama aplikasi berjalan (Persistent Thread)
     QThread m_workerThread;
-    QPointer<AudioServerWorker> m_serverWorker;
-    QProcess m_appProcess;
-    
-    // Audio Components
-    QPointer<QIODevice> m_audioIO;
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    QAudioOutput* m_audioOutput = nullptr;
-#else
-    QAudioSink *m_audioSink = nullptr;
-#endif
-    
-    QAudioFormat m_format;
+    QPointer<ScrcpyAudioWorker> m_worker;
 };
 
 #endif // AUDIOOUTPUT_H

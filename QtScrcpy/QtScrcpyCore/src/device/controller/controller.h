@@ -1,4 +1,3 @@
-
 #ifndef CONTROLLER_H
 #define CONTROLLER_H
 
@@ -8,6 +7,8 @@
 #include <QSize>
 #include <QTimer>
 #include <QMouseEvent>
+#include <atomic>
+#include <functional>
 #include <mutex>
 
 #include "adbprocess.h"
@@ -65,24 +66,26 @@ public:
 
 signals:
     void grabCursor(bool grab);
-    void requestSendControl(const QByteArray &buffer);
 
 private slots:
     void flushNetworkBuffer();
 
 protected:
-    bool event(QEvent *event);
+    bool event(QEvent *event) override;
 
 private:
     void postKeyCodeClick(AndroidKeycode keycode);
+    void scheduleNetworkFlush();
 
 private:
     QPointer<Receiver> m_receiver;
     QPointer<InputConvertBase> m_inputConvert;
     std::function<qint64(const QByteArray&)> m_sendData = Q_NULLPTR;
+
     QTimer m_networkTimer;
     QByteArray m_sendBuffer;
     std::mutex m_bufferMutex;
+    std::atomic_bool m_stopping{false};
 };
 
 #endif // CONTROLLER_H

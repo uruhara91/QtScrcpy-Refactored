@@ -106,6 +106,7 @@ public:
     virtual void deRegisterDeviceObserver(DeviceObserver* observer) = 0;
     virtual void registerFrameSink(FrameSink* sink) = 0;
     virtual void deRegisterFrameSink(FrameSink* sink) = 0;
+    virtual void setFpsCounterEnabled(bool enabled) = 0;
 
     virtual bool connectDevice() = 0;
     virtual void disconnectDevice() = 0;

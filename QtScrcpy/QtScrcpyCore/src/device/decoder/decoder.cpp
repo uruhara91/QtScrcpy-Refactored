@@ -175,7 +175,7 @@ bool Decoder::enqueuePacket(PacketHandle packet)
 
 void Decoder::onDecodeFrame(AVPacket *packet)
 {
-    enqueuePacket(PacketHandle(packet));
+    (void)enqueuePacket(PacketHandle(packet));
 }
 
 void Decoder::run()

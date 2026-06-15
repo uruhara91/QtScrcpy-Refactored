@@ -7,6 +7,7 @@
 #include <QString>
 #include <QThread>
 #include <QWaitCondition>
+#include <atomic>
 
 extern "C"
 {
@@ -29,7 +30,7 @@ public:
 
     void setFrameSize(const QSize &declaredFrameSize);
     void setFormat(Recorder::RecorderFormat format);
-    
+
     [[nodiscard]] bool open();
     void close();
     [[nodiscard]] bool startRecorder();
@@ -56,16 +57,16 @@ private:
     QString m_fileName = "";
     AVFormatContext *m_formatCtx = nullptr;
     QSize m_declaredFrameSize;
-    
+
     bool m_headerWritten = false;
     RecorderFormat m_format = RECORDER_FORMAT_NULL;
-    
+
     QMutex m_mutex;
     QWaitCondition m_recvDataCond;
-    
-    bool m_stopped = false; 
-    bool m_failed = false;
-    
+
+    std::atomic_bool m_stopped{false};
+    std::atomic_bool m_failed{false};
+
     QQueue<AVPacket *> m_queue;
 };
 

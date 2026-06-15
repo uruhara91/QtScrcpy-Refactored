@@ -26,22 +26,21 @@ bool FpsCounter::isStarted()
 
 void FpsCounter::addRenderedFrame()
 {
-    m_rendered++;
+    m_rendered.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FpsCounter::addSkippedFrame()
 {
-    m_skipped++;
+    m_skipped.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FpsCounter::timerEvent(QTimerEvent *event)
 {
     if (event && m_counterTimer == event->timerId()) {
-        m_curRendered = m_rendered;
-        m_curSkipped = m_skipped;
-        resetCounter();
+        m_curRendered = m_rendered.exchange(0, std::memory_order_acq_rel);
+        m_curSkipped = m_skipped.exchange(0, std::memory_order_acq_rel);
         emit updateFPS(m_curRendered);
-        //qInfo("FPS:%d Discard:%d", m_curRendered, m_skipped);
+        //qInfo("FPS:%d Discard:%d", m_curRendered, m_curSkipped);
     }
 }
 
@@ -61,6 +60,6 @@ void FpsCounter::stopCounterTimer()
 
 void FpsCounter::resetCounter()
 {
-    m_rendered = 0;
-    m_skipped = 0;
+    m_rendered.store(0, std::memory_order_release);
+    m_skipped.store(0, std::memory_order_release);
 }

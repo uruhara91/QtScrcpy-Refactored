@@ -29,11 +29,6 @@ public:
     explicit VideoForm(bool framelessWindow = false, bool skin = true, bool showToolBar = true, QWidget *parent = Q_NULLPTR);
     ~VideoForm();
 
-    void updateRender(int width, int height,
-                      std::span<const uint8_t> dataY,
-                      std::span<const uint8_t> dataU,
-                      std::span<const uint8_t> dataV,
-                      int linesizeY, int linesizeU, int linesizeV);
     void staysOnTop(bool top = true);
     void updateShowSize(const QSize &newSize);
     void setSerial(const QString& serial);
@@ -54,11 +49,6 @@ private:
                      std::span<const uint8_t> dataV,
                      int linesizeY, int linesizeU, int linesizeV) noexcept override;
 
-    void onFrame(int width, int height,
-                 std::span<const uint8_t> dataY,
-                 std::span<const uint8_t> dataU,
-                 std::span<const uint8_t> dataV,
-                 int linesizeY, int linesizeU, int linesizeV) override;
     void updateFPS(quint32 fps) override;
     void grabCursor(bool grab) override;
 
@@ -111,8 +101,6 @@ private:
     bool show_toolbar = true;
     bool m_isFullScreen = false;
     bool m_framelessWindow = false;
-
-    std::atomic<bool> m_resizePending = false;
 
     std::atomic<QYuvOpenGLWidget*> m_frameSinkWidget{nullptr};
     std::atomic<int> m_latestFrameWidth{0};

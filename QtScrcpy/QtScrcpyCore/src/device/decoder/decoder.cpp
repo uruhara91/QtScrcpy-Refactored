@@ -151,6 +151,14 @@ bool Decoder::enqueuePacket(AVPacket *packet)
     return true;
 }
 
+void Decoder::onDecodeFrame(AVPacket *packet)
+{
+    if (!packet) return;
+    if (!enqueuePacket(packet)) {
+        PacketPool::get().release(packet);
+    }
+}
+
 void Decoder::run()
 {
     while (!m_stopping.load(std::memory_order_acquire)) {

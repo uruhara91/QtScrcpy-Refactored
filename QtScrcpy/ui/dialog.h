@@ -94,6 +94,13 @@ private:
     QAction *m_showWindow;
     QAction *m_quit;
     AudioOutput m_audioOutput;
+    QMetaObject::Connection m_audioStartedConnection = QObject::connect(
+        &m_audioOutput,
+        &AudioOutput::started,
+        this,
+        [this]() {
+            outLog(QStringLiteral("Audio codec and output sink initialized."), true);
+        });
     QMetaObject::Connection m_audioErrorConnection = QObject::connect(
         &m_audioOutput,
         &AudioOutput::errorOccurred,

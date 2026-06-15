@@ -33,9 +33,10 @@ Device::Device(DeviceParams params, QObject *parent)
                    std::span<const uint8_t> u,
                    std::span<const uint8_t> v,
                    int sy, int su, int sv) {
-                forEachObserver([&](DeviceObserver &observer) {
-                    observer.onFrame(w, h, y, u, v, sy, su, sv);
-                });
+                std::shared_lock<std::shared_mutex> lock(m_frameSinkMutex);
+                if (m_frameSink) {
+                    m_frameSink->submitFrame(w, h, y, u, v, sy, su, sv);
+                }
             });
 
         m_fileHandler = std::make_unique<FileHandler>();
@@ -65,15 +66,51 @@ Device::Device(DeviceParams params, QObject *parent)
     initSignals();
 }
 
-Device::~Device() { disconnectDevice(); }
+Device::~Device()
+{
+    disconnectDevice();
+}
 
-void Device::setUserData(void *data) { m_userData = data; }
-void *Device::getUserData() { return m_userData; }
+void Device::setUserData(void *data)
+{
+    m_userData = data;
+}
+
+void *Device::getUserData()
+{
+    return m_userData;
+}
+
+void Device::registerFrameSink(FrameSink *sink)
+{
+    if (!sink) return;
+
+    sink->activateFrameSink();
+    std::unique_lock<std::shared_mutex> lock(m_frameSinkMutex);
+    m_frameSink = sink;
+}
+
+void Device::deRegisterFrameSink(FrameSink *sink)
+{
+    if (!sink) return;
+
+    {
+        std::unique_lock<std::shared_mutex> lock(m_frameSinkMutex);
+        if (m_frameSink != sink) return;
+        m_frameSink = nullptr;
+    }
+    sink->deactivateFrameSink();
+}
 
 void Device::registerDeviceObserver(DeviceObserver *observer)
 {
     if (!observer) return;
-    std::unique_lock lock(m_observerMutex);
+
+    if (auto *sink = dynamic_cast<FrameSink *>(observer)) {
+        registerFrameSink(sink);
+    }
+
+    std::unique_lock<std::shared_mutex> lock(m_observerMutex);
     if (std::find(m_deviceObservers.begin(), m_deviceObservers.end(), observer) ==
         m_deviceObservers.end()) {
         m_deviceObservers.push_back(observer);
@@ -82,11 +119,20 @@ void Device::registerDeviceObserver(DeviceObserver *observer)
 
 void Device::deRegisterDeviceObserver(DeviceObserver *observer)
 {
-    std::unique_lock lock(m_observerMutex);
+    if (!observer) return;
+
+    if (auto *sink = dynamic_cast<FrameSink *>(observer)) {
+        deRegisterFrameSink(sink);
+    }
+
+    std::unique_lock<std::shared_mutex> lock(m_observerMutex);
     std::erase(m_deviceObservers, observer);
 }
 
-const QString &Device::getSerial() { return m_params.serial; }
+const QString &Device::getSerial()
+{
+    return m_params.serial;
+}
 
 void Device::updateScript(QString script)
 {

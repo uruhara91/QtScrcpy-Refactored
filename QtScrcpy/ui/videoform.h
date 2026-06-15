@@ -1,6 +1,7 @@
 #ifndef VIDEOFORM_H
 #define VIDEOFORM_H
 
+#include <QLabel>
 #include <QMetaObject>
 #include <QPointer>
 #include <QThread>
@@ -18,7 +19,6 @@ namespace Ui
 
 class ToolForm;
 class FileHandler;
-class QLabel;
 
 class VideoForm : public QWidget,
                   public qsc::DeviceObserver,

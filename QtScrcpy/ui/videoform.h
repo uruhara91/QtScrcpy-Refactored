@@ -225,7 +225,7 @@ inline void VideoForm::syncFpsCounterState()
     if (auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial)) {
         const bool sinkActive =
             m_frameSinkWidget.load(std::memory_order_acquire) != nullptr;
-        const bool enabled = sinkActive && m_fpsLabel && m_fpsLabel->isVisible();
+        const bool enabled = sinkActive && m_fpsLabel && !m_fpsLabel->isHidden();
         device->setFpsCounterEnabled(enabled);
     }
 }

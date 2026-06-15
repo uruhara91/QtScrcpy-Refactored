@@ -35,6 +35,7 @@ public:
     void recvDeviceMsg(DeviceMsg *deviceMsg);
     void test(QRect rc);
     bool sendControl(const QByteArray &buffer);
+    bool sendControl(const ControlMsg &message);
 
     void updateScript(QString gameScript = "");
     bool isCurrentCustomKeymap();
@@ -75,6 +76,7 @@ protected:
 private:
     void postKeyCodeClick(AndroidKeycode keycode);
     void scheduleNetworkFlush(int delayMs = 0);
+    bool sendControlBytes(const char *data, int size);
 
 private:
     QPointer<Receiver> m_receiver;
@@ -83,6 +85,7 @@ private:
 
     QTimer m_networkTimer;
     QByteArray m_sendBuffer;
+    QByteArray m_flushBuffer;
     std::mutex m_bufferMutex;
     bool m_flushInProgress = false;
     std::atomic_bool m_stopping{false};

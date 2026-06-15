@@ -72,6 +72,7 @@ private:
     static constexpr int MAX_PACKET_QUEUE_SIZE = 8;
 
     void decodePacket(AVPacket *packet);
+    void drainDecodedFrames();
     void clearPacketQueue();
     void updateMaximumQueueDepth(std::size_t depth);
 

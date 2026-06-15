@@ -12,13 +12,14 @@
 #include <memory>
 #include <span>
 
+#include "demuxer.h"
+
 extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavutil/pixfmt.h"
 }
 
 struct AVCodecContext;
-struct AVPacket;
 struct AVFrame;
 
 struct AVCodecContextDeleter {
@@ -43,8 +44,9 @@ public:
     [[nodiscard]] bool open();
     void close();
 
-    // Takes ownership only when true is returned.
-    [[nodiscard]] bool enqueuePacket(AVPacket *packet);
+    // Ownership is transferred unconditionally. Rejected packets are released
+    // automatically by PacketHandle, so callers cannot leak on failure paths.
+    [[nodiscard]] bool enqueuePacket(PacketHandle packet);
 
     void peekFrame(std::function<void(int width, int height, uint8_t *dataRGB32)> onFrame);
     VideoBuffer *videoBuffer() const { return m_vb.get(); }
@@ -57,8 +59,7 @@ public:
     }
 
 public slots:
-    // Compatibility bridge for the existing Device wiring. The slot always
-    // consumes ownership, even when the bounded queue rejects the packet.
+    // Temporary compatibility bridge for legacy signal wiring.
     void onDecodeFrame(AVPacket *packet);
 
 signals:
@@ -71,7 +72,7 @@ protected:
 private:
     static constexpr int MAX_PACKET_QUEUE_SIZE = 8;
 
-    void decodePacket(AVPacket *packet);
+    void decodePacket(PacketHandle packet);
     void drainDecodedFrames();
     void clearPacketQueue();
     void updateMaximumQueueDepth(std::size_t depth);

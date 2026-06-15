@@ -8,14 +8,13 @@ class FpsCounter : public QObject
 {
     Q_OBJECT
 public:
-    explicit FpsCounter(QObject *parent = Q_NULLPTR);
-    virtual ~FpsCounter();
+    explicit FpsCounter(QObject *parent = nullptr);
+    ~FpsCounter() override = default;
 
     void start();
     void stop();
-    bool isStarted();
-    void addRenderedFrame();
-    void addSkippedFrame();
+    [[nodiscard]] bool isStarted() const noexcept;
+    void addRenderedFrame() noexcept;
 
 signals:
     void updateFPS(quint32 fps);
@@ -24,17 +23,11 @@ protected:
     void timerEvent(QTimerEvent *event) override;
 
 private:
-    void startCounterTimer();
-    void stopCounterTimer();
-    void resetCounter();
+    void resetCounter() noexcept;
 
 private:
     qint32 m_counterTimer = 0;
-    quint32 m_curRendered = 0;
-    quint32 m_curSkipped = 0;
-
     std::atomic<quint32> m_rendered{0};
-    std::atomic<quint32> m_skipped{0};
 };
 
 #endif // FPSCOUNTER_H

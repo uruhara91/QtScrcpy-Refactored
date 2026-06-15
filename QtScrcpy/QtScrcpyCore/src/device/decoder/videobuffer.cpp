@@ -4,6 +4,7 @@
 #include <QDebug>
 #include <QMetaObject>
 #include <QMutexLocker>
+#include <QThread>
 #include <utility>
 
 extern "C" {
@@ -15,38 +16,79 @@ VideoBuffer::VideoBuffer(QObject *parent)
 {
     connect(&m_fpsCounter, &FpsCounter::updateFPS,
             this, &VideoBuffer::updateFPS);
-    m_fpsCounter.start();
 }
 
 VideoBuffer::~VideoBuffer()
 {
+    m_frameWork.store(WorkNone, std::memory_order_release);
     m_fpsCounter.stop();
 
     QMutexLocker locker(&m_requestMutex);
     m_pendingCaptures.clear();
-    m_captureRequested.store(false, std::memory_order_release);
+}
+
+void VideoBuffer::setFpsCounterEnabled(bool enabled)
+{
+    constexpr std::uint8_t fpsMask = WorkFps;
+    bool changed = false;
+
+    if (enabled) {
+        const std::uint8_t previous = m_frameWork.fetch_or(
+            fpsMask, std::memory_order_acq_rel);
+        changed = (previous & fpsMask) == 0;
+    } else {
+        const std::uint8_t previous = m_frameWork.fetch_and(
+            static_cast<std::uint8_t>(~fpsMask),
+            std::memory_order_acq_rel);
+        changed = (previous & fpsMask) != 0;
+    }
+
+    if (!changed) return;
+
+    if (QThread::currentThread() == thread()) {
+        applyFpsCounterState(enabled);
+        return;
+    }
+
+    QMetaObject::invokeMethod(
+        this,
+        [this, enabled]() { applyFpsCounterState(enabled); },
+        Qt::QueuedConnection);
+}
+
+void VideoBuffer::applyFpsCounterState(bool enabled)
+{
+    if (enabled) m_fpsCounter.start();
+    else m_fpsCounter.stop();
 }
 
 void VideoBuffer::updateLatestFrame(const AVFrame *frame)
 {
     if (!frame) return;
 
-    m_fpsCounter.addRenderedFrame();
+    const std::uint8_t work = m_frameWork.load(std::memory_order_acquire);
+    if (work == WorkNone) return;
 
-    if (!m_captureRequested.load(std::memory_order_acquire)) {
-        return;
+    if ((work & WorkFps) != 0) {
+        m_fpsCounter.addRenderedFrame();
     }
+
+    if ((work & WorkCapture) == 0) return;
 
     std::vector<FrameCallback> callbacks;
     {
         QMutexLocker locker(&m_requestMutex);
         if (m_pendingCaptures.empty()) {
-            m_captureRequested.store(false, std::memory_order_release);
+            m_frameWork.fetch_and(
+                static_cast<std::uint8_t>(~WorkCapture),
+                std::memory_order_release);
             return;
         }
 
         callbacks.swap(m_pendingCaptures);
-        m_captureRequested.store(false, std::memory_order_release);
+        m_frameWork.fetch_and(
+            static_cast<std::uint8_t>(~WorkCapture),
+            std::memory_order_release);
     }
 
     AVFrame *rawSnapshot = av_frame_alloc();
@@ -73,11 +115,9 @@ void VideoBuffer::peekRenderedFrame(FrameCallback onFrame)
 {
     if (!onFrame) return;
 
-    {
-        QMutexLocker locker(&m_requestMutex);
-        m_pendingCaptures.push_back(std::move(onFrame));
-        m_captureRequested.store(true, std::memory_order_release);
-    }
+    QMutexLocker locker(&m_requestMutex);
+    m_pendingCaptures.push_back(std::move(onFrame));
+    m_frameWork.fetch_or(WorkCapture, std::memory_order_release);
 }
 
 void VideoBuffer::deliverSnapshot(SharedFrame snapshot,

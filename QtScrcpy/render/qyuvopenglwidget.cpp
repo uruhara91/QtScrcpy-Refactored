@@ -4,16 +4,9 @@
 #include <QMetaObject>
 #include <QSurfaceFormat>
 #include <algorithm>
-#include <concepts>
 #include <cstring>
 #include <limits>
 #include <mutex>
-
-// State definitions for each persistently mapped PBO set.
-constexpr int STATE_FREE = 0;
-constexpr int STATE_WRITING = 1;
-constexpr int STATE_READY = 2;
-constexpr int STATE_PROCESSING = 3;
 
 static const char *vertShader = R"(#version 450 core
 layout(location = 0) in vec3 vertexIn;
@@ -49,11 +42,13 @@ void main(void) {
 }
 )";
 
-QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent) : QOpenGLWidget(parent)
+QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent)
+    : QOpenGLWidget(parent)
 {
     QSurfaceFormat format;
     format.setVersion(4, 5);
     format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
     format.setSwapInterval(0);
     format.setRedBufferSize(8);
     format.setGreenBufferSize(8);
@@ -66,10 +61,12 @@ QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent) : QOpenGLWidget(parent)
     setUpdateBehavior(QOpenGLWidget::NoPartialUpdate);
 
     connect(this, &QYuvOpenGLWidget::requestUpdateTextures, this,
-            [this](int w, int h, int strideY, int strideU, int strideV) {
+            [this](int width, int height,
+                   int strideY, int strideU, int strideV) {
         if (!m_acceptFrames.load(std::memory_order_acquire)) return;
 
-        if (w < 16 || w > 8192 || h < 16 || h > 8192 ||
+        if (width < 16 || width > 8192 ||
+            height < 16 || height > 8192 ||
             strideY <= 0 || strideU <= 0 || strideV <= 0) {
             m_textureSizeMismatch.store(false, std::memory_order_release);
             return;
@@ -81,15 +78,13 @@ QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent) : QOpenGLWidget(parent)
         }
 
         makeCurrent();
-        setFrameSize(QSize(w, h));
-        const bool pboReady = initPBOs(h, strideY, strideU, strideV);
-        if (pboReady) {
-            initTextures(w, h);
-        }
+        setFrameSize(QSize(width, height));
+        const bool pboReady = initPBOs(height, strideY, strideU, strideV);
+        if (pboReady) initTextures(width, height);
         doneCurrent();
 
         m_textureSizeMismatch.store(false, std::memory_order_release);
-        if (pboReady) update();
+        if (pboReady) scheduleUpdate();
     }, Qt::QueuedConnection);
 }
 
@@ -107,6 +102,17 @@ QYuvOpenGLWidget::~QYuvOpenGLWidget()
         m_vbo = 0;
         doneCurrent();
     }
+
+    const auto submitted = m_submittedFrames.load(std::memory_order_relaxed);
+    const auto rendered = m_renderedFrames.load(std::memory_order_relaxed);
+    const auto overwritten = m_overwrittenReadyFrames.load(std::memory_order_relaxed);
+    const auto dropped = m_droppedFrames.load(std::memory_order_relaxed);
+    if (overwritten > 0 || dropped > 0) {
+        qInfo() << "Render mailbox stats - submitted:" << submitted
+                << "rendered:" << rendered
+                << "overwritten ready:" << overwritten
+                << "dropped:" << dropped;
+    }
 }
 
 QSize QYuvOpenGLWidget::minimumSizeHint() const
@@ -116,8 +122,8 @@ QSize QYuvOpenGLWidget::minimumSizeHint() const
 
 QSize QYuvOpenGLWidget::sizeHint() const
 {
-    return QSize(m_frameWidth.load(std::memory_order_relaxed),
-                 m_frameHeight.load(std::memory_order_relaxed));
+    const QSize current = frameSize();
+    return current.isValid() ? current : QSize(640, 360);
 }
 
 QSize QYuvOpenGLWidget::frameSize() const
@@ -128,17 +134,117 @@ QSize QYuvOpenGLWidget::frameSize() const
 
 void QYuvOpenGLWidget::setFrameSize(const QSize &frameSize)
 {
-    const int w = frameSize.width();
-    const int h = frameSize.height();
-    if (m_frameWidth.load(std::memory_order_relaxed) == w &&
-        m_frameHeight.load(std::memory_order_relaxed) == h) {
+    const int width = frameSize.width();
+    const int height = frameSize.height();
+    if (m_frameWidth.load(std::memory_order_relaxed) == width &&
+        m_frameHeight.load(std::memory_order_relaxed) == height) {
         return;
     }
 
-    m_frameWidth.store(w, std::memory_order_relaxed);
-    m_frameHeight.store(h, std::memory_order_relaxed);
+    m_frameWidth.store(width, std::memory_order_relaxed);
+    m_frameHeight.store(height, std::memory_order_relaxed);
     m_pboSizeValid.store(false, std::memory_order_release);
     updateGeometry();
+}
+
+QYuvOpenGLWidget::FrameBuffer *QYuvOpenGLWidget::acquireWritableFrame()
+{
+    for (FrameBuffer &frame : m_frames) {
+        int expected = STATE_FREE;
+        if (frame.state.compare_exchange_strong(
+                expected, STATE_WRITING,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return &frame;
+        }
+    }
+
+    // GPU/GUI is behind. Reclaim the oldest frame that has not started GPU
+    // processing yet, so the mailbox always retains the freshest frame.
+    for (int attempt = 0; attempt < PBO_COUNT; ++attempt) {
+        int oldestIndex = -1;
+        std::uint64_t oldestSequence = std::numeric_limits<std::uint64_t>::max();
+
+        for (int index = 0; index < PBO_COUNT; ++index) {
+            FrameBuffer &frame = m_frames[index];
+            if (frame.state.load(std::memory_order_acquire) == STATE_READY &&
+                frame.sequence < oldestSequence) {
+                oldestSequence = frame.sequence;
+                oldestIndex = index;
+            }
+        }
+
+        if (oldestIndex < 0) return nullptr;
+
+        int expected = STATE_READY;
+        if (m_frames[oldestIndex].state.compare_exchange_strong(
+                expected, STATE_WRITING,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            m_overwrittenReadyFrames.fetch_add(1, std::memory_order_relaxed);
+            return &m_frames[oldestIndex];
+        }
+    }
+
+    return nullptr;
+}
+
+int QYuvOpenGLWidget::acquireNewestReadyFrame()
+{
+    for (int attempt = 0; attempt < PBO_COUNT; ++attempt) {
+        int newestIndex = -1;
+        std::uint64_t newestSequence = 0;
+
+        for (int index = 0; index < PBO_COUNT; ++index) {
+            FrameBuffer &frame = m_frames[index];
+            if (frame.state.load(std::memory_order_acquire) == STATE_READY &&
+                frame.sequence >= newestSequence) {
+                newestSequence = frame.sequence;
+                newestIndex = index;
+            }
+        }
+
+        if (newestIndex < 0) return -1;
+
+        int expected = STATE_READY;
+        if (m_frames[newestIndex].state.compare_exchange_strong(
+                expected, STATE_PROCESSING,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return newestIndex;
+        }
+    }
+
+    return -1;
+}
+
+void QYuvOpenGLWidget::releaseStaleReadyFrames(int selectedIndex)
+{
+    for (int index = 0; index < PBO_COUNT; ++index) {
+        if (index == selectedIndex) continue;
+
+        int expected = STATE_READY;
+        if (m_frames[index].state.compare_exchange_strong(
+                expected, STATE_FREE,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
+void QYuvOpenGLWidget::scheduleUpdate()
+{
+    if (!m_acceptFrames.load(std::memory_order_acquire)) return;
+    if (m_updatePending.test_and_set(std::memory_order_acq_rel)) return;
+
+    QMetaObject::invokeMethod(this, [this]() {
+        if (m_acceptFrames.load(std::memory_order_acquire)) {
+            update();
+        } else {
+            m_updatePending.clear(std::memory_order_release);
+        }
+    }, Qt::QueuedConnection);
 }
 
 void QYuvOpenGLWidget::setFrameData(int width, int height,
@@ -148,7 +254,10 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
                                     int linesizeY, int linesizeU, int linesizeV)
 {
     if (!m_acceptFrames.load(std::memory_order_acquire)) return;
-    if (width <= 0 || height <= 0 || linesizeY <= 0 || linesizeU <= 0 || linesizeV <= 0) return;
+    if (width <= 0 || height <= 0 ||
+        linesizeY <= 0 || linesizeU <= 0 || linesizeV <= 0) {
+        return;
+    }
 
     const int chromaHeight = (height + 1) / 2;
     const std::array<std::size_t, 3> requiredBytes{
@@ -164,53 +273,58 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
     }
 
     std::shared_lock<std::shared_mutex> readLock(m_rwLock, std::try_to_lock);
-    if (!readLock.owns_lock()) return;
+    if (!readLock.owns_lock()) {
+        m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
-    const bool sizeChanged = width != m_frameWidth.load(std::memory_order_relaxed) ||
-                             height != m_frameHeight.load(std::memory_order_relaxed);
-    const bool strideChanged = linesizeY != m_pboStrides[0] ||
-                               linesizeU != m_pboStrides[1] ||
-                               linesizeV != m_pboStrides[2];
+    const bool sizeChanged =
+        width != m_frameWidth.load(std::memory_order_relaxed) ||
+        height != m_frameHeight.load(std::memory_order_relaxed);
+    const bool strideChanged =
+        linesizeY != m_pboStrides[0] ||
+        linesizeU != m_pboStrides[1] ||
+        linesizeV != m_pboStrides[2];
     const bool pboInvalid = !m_pboSizeValid.load(std::memory_order_acquire);
 
     if (sizeChanged || strideChanged || pboInvalid) {
         readLock.unlock();
         bool expected = false;
         if (m_textureSizeMismatch.compare_exchange_strong(
-                expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            emit requestUpdateTextures(width, height, linesizeY, linesizeU, linesizeV);
+                expected, true,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            emit requestUpdateTextures(width, height,
+                                       linesizeY, linesizeU, linesizeV);
         }
         return;
     }
 
-    FrameBuffer *targetFrame = nullptr;
-    for (FrameBuffer &frame : m_frames) {
-        int expected = STATE_FREE;
-        if (frame.state.compare_exchange_strong(
-                expected, STATE_WRITING, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            targetFrame = &frame;
-            break;
-        }
+    FrameBuffer *target = acquireWritableFrame();
+    if (!target) {
+        m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        return;
     }
 
-    if (!targetFrame) return;
+    const std::array<const uint8_t *, 3> sources{
+        dataY.data(), dataU.data(), dataV.data()
+    };
 
-    const std::array<const uint8_t *, 3> srcData{dataY.data(), dataU.data(), dataV.data()};
     for (int plane = 0; plane < 3; ++plane) {
-        auto *destination = static_cast<uint8_t *>(targetFrame->mappedPtrs[plane]);
+        auto *destination = static_cast<uint8_t *>(target->mappedPtrs[plane]);
         if (!destination) {
-            targetFrame->state.store(STATE_FREE, std::memory_order_release);
+            target->state.store(STATE_FREE, std::memory_order_release);
+            m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        std::memcpy(destination, srcData[plane], requiredBytes[plane]);
+        std::memcpy(destination, sources[plane], requiredBytes[plane]);
     }
 
-    targetFrame->sequence = m_globalSequence.fetch_add(1, std::memory_order_relaxed) + 1;
-    targetFrame->state.store(STATE_READY, std::memory_order_release);
-
-    if (!m_updatePending.test_and_set(std::memory_order_acq_rel)) {
-        QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
-    }
+    target->sequence = m_globalSequence.fetch_add(
+        1, std::memory_order_relaxed) + 1;
+    target->state.store(STATE_READY, std::memory_order_release);
+    m_submittedFrames.fetch_add(1, std::memory_order_relaxed);
+    scheduleUpdate();
 }
 
 void QYuvOpenGLWidget::initializeGL()
@@ -226,16 +340,16 @@ void QYuvOpenGLWidget::initializeGL()
 
     initShader();
 
-    static const float coordinate[] = {
-        -1.0f, -1.0f, 0.0f,   0.0f, 1.0f,
-         1.0f, -1.0f, 0.0f,   1.0f, 1.0f,
-        -1.0f,  1.0f, 0.0f,   0.0f, 0.0f,
-         1.0f,  1.0f, 0.0f,   1.0f, 0.0f
+    static const float coordinates[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f,
+         1.0f, -1.0f, 0.0f, 1.0f, 1.0f,
+        -1.0f,  1.0f, 0.0f, 0.0f, 0.0f,
+         1.0f,  1.0f, 0.0f, 1.0f, 0.0f
     };
 
     glCreateVertexArrays(1, &m_vao);
     glCreateBuffers(1, &m_vbo);
-    glNamedBufferStorage(m_vbo, sizeof(coordinate), coordinate, 0);
+    glNamedBufferStorage(m_vbo, sizeof(coordinates), coordinates, 0);
 
     glVertexArrayVertexBuffer(m_vao, 0, m_vbo, 0, 5 * sizeof(float));
     glEnableVertexArrayAttrib(m_vao, 0);
@@ -271,24 +385,32 @@ void QYuvOpenGLWidget::initTextures(int width, int height)
     deInitTextures();
     glCreateTextures(GL_TEXTURE_2D, 3, m_textures.data());
 
-    const std::array<int, 3> widths{width, (width + 1) / 2, (width + 1) / 2};
-    const std::array<int, 3> heights{height, (height + 1) / 2, (height + 1) / 2};
+    const std::array<int, 3> widths{
+        width, (width + 1) / 2, (width + 1) / 2
+    };
+    const std::array<int, 3> heights{
+        height, (height + 1) / 2, (height + 1) / 2
+    };
 
     for (int plane = 0; plane < 3; ++plane) {
         glTextureParameteri(m_textures[plane], GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(m_textures[plane], GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTextureParameteri(m_textures[plane], GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTextureParameteri(m_textures[plane], GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTextureStorage2D(m_textures[plane], 1, GL_R8, widths[plane], heights[plane]);
+        glTextureStorage2D(m_textures[plane], 1, GL_R8,
+                           widths[plane], heights[plane]);
     }
 }
 
-bool QYuvOpenGLWidget::initPBOs(int height, int strideY, int strideU, int strideV)
+bool QYuvOpenGLWidget::initPBOs(int height,
+                                int strideY, int strideU, int strideV)
 {
     std::unique_lock<std::shared_mutex> writeLock(m_rwLock);
     deInitPBOsUnlocked();
 
-    if (height <= 0 || strideY <= 0 || strideU <= 0 || strideV <= 0) return false;
+    if (height <= 0 || strideY <= 0 || strideU <= 0 || strideV <= 0) {
+        return false;
+    }
 
     const int chromaHeight = (height + 1) / 2;
     const std::array<GLsizeiptr, 3> sizes{
@@ -297,9 +419,15 @@ bool QYuvOpenGLWidget::initPBOs(int height, int strideY, int strideU, int stride
         static_cast<GLsizeiptr>(strideV) * chromaHeight
     };
 
-    if (std::ranges::any_of(sizes, [](GLsizeiptr size) { return size <= 0; })) return false;
+    if (std::ranges::any_of(sizes, [](GLsizeiptr size) {
+            return size <= 0;
+        })) {
+        return false;
+    }
 
-    constexpr GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+    constexpr GLbitfield flags =
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+
     for (FrameBuffer &frame : m_frames) {
         glCreateBuffers(3, frame.pboIds.data());
         for (int plane = 0; plane < 3; ++plane) {
@@ -316,6 +444,7 @@ bool QYuvOpenGLWidget::initPBOs(int height, int strideY, int strideU, int stride
                 return false;
             }
         }
+
         frame.fence = nullptr;
         frame.sequence = 0;
         frame.state.store(STATE_FREE, std::memory_order_release);
@@ -372,15 +501,20 @@ void QYuvOpenGLWidget::deInitPBOsUnlocked()
 void QYuvOpenGLWidget::checkFences()
 {
     for (FrameBuffer &frame : m_frames) {
-        if (frame.state.load(std::memory_order_acquire) != STATE_PROCESSING) continue;
+        if (frame.state.load(std::memory_order_acquire) != STATE_PROCESSING) {
+            continue;
+        }
 
         if (!frame.fence) {
             frame.state.store(STATE_FREE, std::memory_order_release);
             continue;
         }
 
-        const GLenum result = glClientWaitSync(frame.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
-        if (result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED) {
+        const GLenum result = glClientWaitSync(
+            frame.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+
+        if (result == GL_ALREADY_SIGNALED ||
+            result == GL_CONDITION_SATISFIED) {
             glDeleteSync(frame.fence);
             frame.fence = nullptr;
             frame.state.store(STATE_FREE, std::memory_order_release);
@@ -396,65 +530,73 @@ void QYuvOpenGLWidget::checkFences()
 void QYuvOpenGLWidget::paintGL()
 {
     m_updatePending.clear(std::memory_order_release);
-    if (!m_pboSizeValid.load(std::memory_order_acquire)) return;
+
+    if (!m_pboSizeValid.load(std::memory_order_acquire)) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        return;
+    }
 
     checkFences();
 
-    int drawIndex = -1;
-    std::uint64_t highestSequence = 0;
-    for (int i = 0; i < PBO_COUNT; ++i) {
-        if (m_frames[i].state.load(std::memory_order_acquire) != STATE_READY) continue;
+    const int selectedIndex = acquireNewestReadyFrame();
+    releaseStaleReadyFrames(selectedIndex);
 
-        if (m_frames[i].sequence > highestSequence) {
-            if (drawIndex != -1) {
-                m_frames[drawIndex].state.store(STATE_FREE, std::memory_order_release);
-            }
-            highestSequence = m_frames[i].sequence;
-            drawIndex = i;
-        } else {
-            m_frames[i].state.store(STATE_FREE, std::memory_order_release);
-        }
-    }
-
-    if (drawIndex != -1) {
-        FrameBuffer &frame = m_frames[drawIndex];
+    if (selectedIndex >= 0) {
+        FrameBuffer &frame = m_frames[selectedIndex];
         const int width = m_frameWidth.load(std::memory_order_relaxed);
         const int height = m_frameHeight.load(std::memory_order_relaxed);
-        const std::array<int, 3> widths{width, (width + 1) / 2, (width + 1) / 2};
-        const std::array<int, 3> heights{height, (height + 1) / 2, (height + 1) / 2};
+        const std::array<int, 3> widths{
+            width, (width + 1) / 2, (width + 1) / 2
+        };
+        const std::array<int, 3> heights{
+            height, (height + 1) / 2, (height + 1) / 2
+        };
+
+        // Persistent coherent mappings make CPU writes visible, while this
+        // barrier explicitly orders them before the GPU transfer commands.
+        glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
         for (int plane = 0; plane < 3; ++plane) {
-            glBindTextureUnit(plane, m_textures[plane]);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, frame.pboIds[plane]);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, m_pboStrides[plane]);
-            glTextureSubImage2D(m_textures[plane], 0, 0, 0,
-                                widths[plane], heights[plane],
-                                GL_RED, GL_UNSIGNED_BYTE, nullptr);
+            glTextureSubImage2D(
+                m_textures[plane], 0, 0, 0,
+                widths[plane], heights[plane],
+                GL_RED, GL_UNSIGNED_BYTE, nullptr);
         }
 
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
         frame.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        if (frame.fence) {
-            frame.state.store(STATE_PROCESSING, std::memory_order_release);
-        } else {
+        if (!frame.fence) {
             glFinish();
             frame.state.store(STATE_FREE, std::memory_order_release);
         }
+
+        m_renderedFrames.fetch_add(1, std::memory_order_relaxed);
     }
 
-    if (!m_program.isLinked()) return;
-
-    m_program.bind();
-    glBindVertexArray(m_vao);
-    for (int plane = 0; plane < 3; ++plane) {
-        glBindTextureUnit(plane, m_textures[plane]);
+    if (m_program.isLinked()) {
+        m_program.bind();
+        glBindVertexArray(m_vao);
+        for (int plane = 0; plane < 3; ++plane) {
+            glBindTextureUnit(plane, m_textures[plane]);
+        }
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindVertexArray(0);
+        m_program.release();
     }
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-    m_program.release();
+
+    // A frame may have arrived while this paint was running. Ensure it gets
+    // another coalesced render request without creating an event storm.
+    for (const FrameBuffer &frame : m_frames) {
+        if (frame.state.load(std::memory_order_acquire) == STATE_READY) {
+            scheduleUpdate();
+            break;
+        }
+    }
 }
 
 void QYuvOpenGLWidget::resizeGL(int width, int height)

@@ -56,6 +56,11 @@ public:
         return m_maximumQueueDepth.load(std::memory_order_relaxed);
     }
 
+public slots:
+    // Compatibility bridge for the existing Device wiring. The slot always
+    // consumes ownership, even when the bounded queue rejects the packet.
+    void onDecodeFrame(AVPacket *packet);
+
 signals:
     void updateFPS(quint32 fps);
     void newFrame();

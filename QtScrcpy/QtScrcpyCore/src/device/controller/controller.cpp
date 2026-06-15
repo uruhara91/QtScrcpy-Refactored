@@ -16,6 +16,8 @@ Controller::Controller(std::function<qint64(const QByteArray&)> sendData,
     : QObject(parent)
     , m_sendData(std::move(sendData))
 {
+    m_sendBuffer.reserve(4096);
+
     m_receiver = new Receiver(this);
     Q_ASSERT(m_receiver);
     updateScript(std::move(gameScript));
@@ -81,7 +83,6 @@ void Controller::flushNetworkBuffer()
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
         if (!remaining.isEmpty()) {
-            // Keep the unsent prefix ahead of input queued while write() ran.
             m_sendBuffer.prepend(remaining);
         }
         m_flushInProgress = false;
@@ -89,9 +90,6 @@ void Controller::flushNetworkBuffer()
     }
 
     if (!hasPending || m_stopping.load(std::memory_order_acquire)) return;
-
-    // Successful progress retries immediately; a blocked socket gets a small
-    // backoff to avoid spinning while retaining strict message ordering.
     scheduleNetworkFlush(written > 0 ? 0 : 10);
 }
 
@@ -102,11 +100,15 @@ void Controller::recvDeviceMsg(DeviceMsg *deviceMsg)
 
 void Controller::test(QRect rc)
 {
-    auto *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TOUCH);
-    controlMsg->setInjectTouchMsgData(
-        static_cast<quint64>(POINTER_ID_MOUSE), AMOTION_EVENT_ACTION_DOWN,
-        AMOTION_EVENT_BUTTON_PRIMARY, AMOTION_EVENT_BUTTON_PRIMARY, rc, 1.0f);
-    postControlMsg(controlMsg);
+    ControlMsg controlMsg(ControlMsg::CMT_INJECT_TOUCH);
+    controlMsg.setInjectTouchMsgData(
+        static_cast<quint64>(POINTER_ID_MOUSE),
+        AMOTION_EVENT_ACTION_DOWN,
+        AMOTION_EVENT_BUTTON_PRIMARY,
+        AMOTION_EVENT_BUTTON_PRIMARY,
+        rc,
+        1.0f);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::updateScript(QString gameScript)
@@ -134,9 +136,9 @@ bool Controller::isCurrentCustomKeymap()
 
 void Controller::postBackOrScreenOn(bool down)
 {
-    auto *controlMsg = new ControlMsg(ControlMsg::CMT_BACK_OR_SCREEN_ON);
-    controlMsg->setBackOrScreenOnData(down);
-    postControlMsg(controlMsg);
+    ControlMsg controlMsg(ControlMsg::CMT_BACK_OR_SCREEN_ON);
+    controlMsg.setBackOrScreenOnData(down);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::postGoHome() { postKeyCodeClick(AKEYCODE_HOME); }
@@ -151,33 +153,36 @@ void Controller::cut() { postKeyCodeClick(AKEYCODE_CUT); }
 
 void Controller::expandNotificationPanel()
 {
-    postControlMsg(new ControlMsg(ControlMsg::CMT_EXPAND_NOTIFICATION_PANEL));
+    ControlMsg controlMsg(ControlMsg::CMT_EXPAND_NOTIFICATION_PANEL);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::collapsePanel()
 {
-    postControlMsg(new ControlMsg(ControlMsg::CMT_COLLAPSE_PANELS));
+    ControlMsg controlMsg(ControlMsg::CMT_COLLAPSE_PANELS);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::requestDeviceClipboard()
 {
-    postControlMsg(new ControlMsg(ControlMsg::CMT_GET_CLIPBOARD));
+    ControlMsg controlMsg(ControlMsg::CMT_GET_CLIPBOARD);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::getDeviceClipboard(bool cut)
 {
-    auto *controlMsg = new ControlMsg(ControlMsg::CMT_GET_CLIPBOARD);
-    controlMsg->setGetClipboardMsgData(
+    ControlMsg controlMsg(ControlMsg::CMT_GET_CLIPBOARD);
+    controlMsg.setGetClipboardMsgData(
         cut ? ControlMsg::GCCK_CUT : ControlMsg::GCCK_COPY);
-    postControlMsg(controlMsg);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::setDeviceClipboard(bool pause)
 {
     const QString text = QApplication::clipboard()->text();
-    auto *controlMsg = new ControlMsg(ControlMsg::CMT_SET_CLIPBOARD);
-    controlMsg->setSetClipboardMsgData(text, pause);
-    postControlMsg(controlMsg);
+    ControlMsg controlMsg(ControlMsg::CMT_SET_CLIPBOARD);
+    controlMsg.setSetClipboardMsgData(text, pause);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::clipboardPaste()
@@ -188,16 +193,16 @@ void Controller::clipboardPaste()
 
 void Controller::postTextInput(QString &text)
 {
-    auto *controlMsg = new ControlMsg(ControlMsg::CMT_INJECT_TEXT);
-    controlMsg->setInjectTextMsgData(text);
-    postControlMsg(controlMsg);
+    ControlMsg controlMsg(ControlMsg::CMT_INJECT_TEXT);
+    controlMsg.setInjectTextMsgData(text);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::setDisplayPower(bool on)
 {
-    auto *controlMsg = new ControlMsg(ControlMsg::CMT_SET_DISPLAY_POWER);
-    controlMsg->setDisplayPowerData(on);
-    postControlMsg(controlMsg);
+    ControlMsg controlMsg(ControlMsg::CMT_SET_DISPLAY_POWER);
+    controlMsg.setDisplayPowerData(on);
+    (void)sendControl(controlMsg.serializeData());
 }
 
 void Controller::mouseEvent(const QMouseEvent *from,
@@ -259,11 +264,13 @@ bool Controller::sendControl(const QByteArray &buffer)
 
 void Controller::postKeyCodeClick(AndroidKeycode keycode)
 {
-    auto *down = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
-    down->setInjectKeycodeMsgData(AKEY_EVENT_ACTION_DOWN, keycode, 0, AMETA_NONE);
-    postControlMsg(down);
+    ControlMsg down(ControlMsg::CMT_INJECT_KEYCODE);
+    down.setInjectKeycodeMsgData(
+        AKEY_EVENT_ACTION_DOWN, keycode, 0, AMETA_NONE);
+    (void)sendControl(down.serializeData());
 
-    auto *up = new ControlMsg(ControlMsg::CMT_INJECT_KEYCODE);
-    up->setInjectKeycodeMsgData(AKEY_EVENT_ACTION_UP, keycode, 0, AMETA_NONE);
-    postControlMsg(up);
+    ControlMsg up(ControlMsg::CMT_INJECT_KEYCODE);
+    up.setInjectKeycodeMsgData(
+        AKEY_EVENT_ACTION_UP, keycode, 0, AMETA_NONE);
+    (void)sendControl(up.serializeData());
 }

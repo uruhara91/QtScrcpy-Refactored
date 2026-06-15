@@ -48,8 +48,6 @@ public:
     [[nodiscard]] bool open();
     void close();
 
-    // Ownership is transferred unconditionally. Rejected packets are released
-    // automatically by PacketHandle, so callers cannot leak on failure paths.
     [[nodiscard]] bool enqueuePacket(PacketHandle packet);
 
     void peekFrame(std::function<void(int width, int height, uint8_t *dataRGB32)> onFrame);
@@ -140,6 +138,7 @@ private:
     void clearPacketQueue();
     void updateMaximumQueueDepth(std::size_t depth);
     void logTimingStats() const;
+    void logQueueHealth() const;
     int selectDecoderThreadCount() const;
 
 private:
@@ -153,6 +152,7 @@ private:
     QQueue<QueuedPacket> m_packetQueue;
     bool m_waitingForKeyFrame = false;
 
+    bool m_telemetryEnabled = false;
     LatencyWindow m_queueWaitStats;
     LatencyWindow m_workerServiceStats;
     LatencyWindow m_frameIntervalStats;

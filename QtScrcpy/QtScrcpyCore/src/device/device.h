@@ -1,17 +1,19 @@
 ﻿#ifndef DEVICE_H
 #define DEVICE_H
 
-#include <set>
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QTime>
-#include <span>
+#include <functional>
 #include <memory>
+#include <shared_mutex>
+#include <span>
+#include <utility>
+#include <vector>
 
 #include "QtScrcpyCore.h"
 #include "decoder/decoder.h"
 
-// Forward declarations
 class QMouseEvent;
 class QWheelEvent;
 class QKeyEvent;
@@ -32,7 +34,7 @@ class Device : public IDevice
     Q_OBJECT
 public:
     explicit Device(DeviceParams params, QObject *parent = nullptr);
-    virtual ~Device();
+    ~Device() override;
 
     Decoder* decoder() const { return m_decoder.get(); }
 
@@ -82,9 +84,20 @@ private:
     void initSignals();
     bool saveFrame(int width, int height, uint8_t* dataRGB32);
 
+    template <typename Callback>
+    void forEachObserver(Callback&& callback) const
+    {
+        std::shared_lock<std::shared_mutex> lock(m_observerMutex);
+        for (DeviceObserver* observer : m_deviceObservers) {
+            if (observer) {
+                std::invoke(std::forward<Callback>(callback), *observer);
+            }
+        }
+    }
+
 private:
     bool m_serverStartSuccess = false;
-    
+
     std::unique_ptr<Server> m_server;
     std::unique_ptr<Decoder> m_decoder;
     std::unique_ptr<Controller> m_controller;
@@ -94,7 +107,8 @@ private:
 
     QElapsedTimer m_startTimeCount;
     DeviceParams m_params;
-    
+
+    mutable std::shared_mutex m_observerMutex;
     std::vector<DeviceObserver*> m_deviceObservers;
     void *m_userData = nullptr;
 };

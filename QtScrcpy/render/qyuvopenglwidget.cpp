@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QMetaObject>
 #include <QSurfaceFormat>
+#include <QtGlobal>
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -45,6 +46,8 @@ void main(void) {
 QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent)
     : QOpenGLWidget(parent)
 {
+    m_telemetryEnabled = qEnvironmentVariableIntValue("QTSCRCPY_TELEMETRY") > 0;
+
     QSurfaceFormat format;
     format.setVersion(4, 5);
     format.setProfile(QSurfaceFormat::CoreProfile);
@@ -103,15 +106,15 @@ QYuvOpenGLWidget::~QYuvOpenGLWidget()
         doneCurrent();
     }
 
-    const auto submitted = m_submittedFrames.load(std::memory_order_relaxed);
-    const auto rendered = m_renderedFrames.load(std::memory_order_relaxed);
-    const auto overwritten = m_overwrittenReadyFrames.load(std::memory_order_relaxed);
-    const auto dropped = m_droppedFrames.load(std::memory_order_relaxed);
-    if (overwritten > 0 || dropped > 0) {
-        qInfo() << "Render mailbox stats - submitted:" << submitted
-                << "rendered:" << rendered
-                << "overwritten ready:" << overwritten
-                << "dropped:" << dropped;
+    if (m_telemetryEnabled) {
+        qInfo() << "Render mailbox stats - submitted:"
+                << m_submittedFrames.load(std::memory_order_relaxed)
+                << "rendered:"
+                << m_renderedFrames.load(std::memory_order_relaxed)
+                << "overwritten ready:"
+                << m_overwrittenReadyFrames.load(std::memory_order_relaxed)
+                << "dropped:"
+                << m_droppedFrames.load(std::memory_order_relaxed);
     }
 }
 
@@ -159,8 +162,6 @@ QYuvOpenGLWidget::FrameBuffer *QYuvOpenGLWidget::acquireWritableFrame()
         }
     }
 
-    // GPU/GUI is behind. Reclaim the oldest frame that has not started GPU
-    // processing yet, so the mailbox always retains the freshest frame.
     for (int attempt = 0; attempt < PBO_COUNT; ++attempt) {
         int oldestIndex = -1;
         std::uint64_t oldestSequence = std::numeric_limits<std::uint64_t>::max();
@@ -181,7 +182,9 @@ QYuvOpenGLWidget::FrameBuffer *QYuvOpenGLWidget::acquireWritableFrame()
                 expected, STATE_WRITING,
                 std::memory_order_acq_rel,
                 std::memory_order_acquire)) {
-            m_overwrittenReadyFrames.fetch_add(1, std::memory_order_relaxed);
+            if (m_telemetryEnabled) {
+                m_overwrittenReadyFrames.fetch_add(1, std::memory_order_relaxed);
+            }
             return &m_frames[oldestIndex];
         }
     }
@@ -228,7 +231,9 @@ void QYuvOpenGLWidget::releaseStaleReadyFrames(int selectedIndex)
                 expected, STATE_FREE,
                 std::memory_order_acq_rel,
                 std::memory_order_acquire)) {
-            m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            if (m_telemetryEnabled) {
+                m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 }
@@ -274,7 +279,9 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
 
     std::unique_lock<std::mutex> pboLock(m_pboMutex, std::try_to_lock);
     if (!pboLock.owns_lock()) {
-        m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        if (m_telemetryEnabled) {
+            m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        }
         return;
     }
 
@@ -302,9 +309,9 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
 
     FrameBuffer *target = acquireWritableFrame();
     if (!target) {
-        m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
-        // All slots may still be waiting on GPU fences. Keep the GUI polling
-        // so a transient saturation cannot leave the mailbox permanently stuck.
+        if (m_telemetryEnabled) {
+            m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        }
         scheduleUpdate();
         return;
     }
@@ -317,7 +324,9 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
         auto *destination = static_cast<uint8_t *>(target->mappedPtrs[plane]);
         if (!destination) {
             target->state.store(STATE_FREE, std::memory_order_release);
-            m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            if (m_telemetryEnabled) {
+                m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            }
             return;
         }
         std::memcpy(destination, sources[plane], requiredBytes[plane]);
@@ -326,7 +335,9 @@ void QYuvOpenGLWidget::setFrameData(int width, int height,
     target->sequence = m_globalSequence.fetch_add(
         1, std::memory_order_relaxed) + 1;
     target->state.store(STATE_READY, std::memory_order_release);
-    m_submittedFrames.fetch_add(1, std::memory_order_relaxed);
+    if (m_telemetryEnabled) {
+        m_submittedFrames.fetch_add(1, std::memory_order_relaxed);
+    }
     scheduleUpdate();
 }
 
@@ -576,7 +587,9 @@ void QYuvOpenGLWidget::paintGL()
             frame.state.store(STATE_FREE, std::memory_order_release);
         }
 
-        m_renderedFrames.fetch_add(1, std::memory_order_relaxed);
+        if (m_telemetryEnabled) {
+            m_renderedFrames.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     if (m_program.isLinked()) {

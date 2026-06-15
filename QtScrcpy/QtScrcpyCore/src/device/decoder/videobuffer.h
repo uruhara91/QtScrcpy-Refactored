@@ -24,9 +24,10 @@ public:
     explicit VideoBuffer(QObject *parent = nullptr);
     ~VideoBuffer() override;
 
-    // Called for every decoded frame. The idle path only updates FPS and checks
-    // one atomic flag; an AVFrame reference is retained only for an actual
-    // screenshot request.
+    void setFpsCounterEnabled(bool enabled);
+
+    // Called for every decoded frame. With FPS hidden and no screenshot queued,
+    // the idle path is one atomic load followed by an immediate return.
     void updateLatestFrame(const AVFrame* frame);
     void peekRenderedFrame(FrameCallback onFrame);
 
@@ -34,6 +35,12 @@ signals:
     void updateFPS(quint32 fps);
 
 private:
+    enum FrameWorkFlag : std::uint8_t {
+        WorkNone = 0,
+        WorkFps = 1U << 0,
+        WorkCapture = 1U << 1,
+    };
+
     struct FrameDeleter {
         void operator()(AVFrame *frame) const noexcept {
             if (frame) av_frame_free(&frame);
@@ -42,15 +49,16 @@ private:
 
     using SharedFrame = std::shared_ptr<AVFrame>;
 
+    void applyFpsCounterState(bool enabled);
     void deliverSnapshot(SharedFrame snapshot,
                          std::vector<FrameCallback> callbacks);
 
 private:
     FpsCounter m_fpsCounter;
+    std::atomic<std::uint8_t> m_frameWork{WorkNone};
 
     QMutex m_requestMutex;
     std::vector<FrameCallback> m_pendingCaptures;
-    std::atomic_bool m_captureRequested{false};
 };
 
 #endif // VIDEOBUFFER_H

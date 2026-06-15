@@ -1,6 +1,5 @@
 #include "decoder.h"
 #include "videobuffer.h"
-#include "demuxer.h"
 #include "compat.h"
 
 #include <QDebug>
@@ -105,7 +104,7 @@ void Decoder::close()
     }
 }
 
-bool Decoder::enqueuePacket(AVPacket *packet)
+bool Decoder::enqueuePacket(PacketHandle packet)
 {
     if (!packet || !m_codecOpen.load(std::memory_order_acquire) ||
         m_stopping.load(std::memory_order_acquire) || !isRunning()) {
@@ -129,7 +128,7 @@ bool Decoder::enqueuePacket(AVPacket *packet)
         if (m_waitingForKeyFrame) {
             if (isKeyFrame) {
                 discarded.swap(m_packetQueue);
-                m_packetQueue.enqueue(packet);
+                m_packetQueue.enqueue(packet.release());
                 m_waitingForKeyFrame = false;
                 m_flushBeforeNextDecode.store(true, std::memory_order_release);
                 accepted = true;
@@ -139,14 +138,14 @@ bool Decoder::enqueuePacket(AVPacket *packet)
             recoveryTriggered = true;
 
             if (isKeyFrame) {
-                m_packetQueue.enqueue(packet);
+                m_packetQueue.enqueue(packet.release());
                 m_flushBeforeNextDecode.store(true, std::memory_order_release);
                 accepted = true;
             } else {
                 m_waitingForKeyFrame = true;
             }
         } else {
-            m_packetQueue.enqueue(packet);
+            m_packetQueue.enqueue(packet.release());
             accepted = true;
         }
 
@@ -176,16 +175,13 @@ bool Decoder::enqueuePacket(AVPacket *packet)
 
 void Decoder::onDecodeFrame(AVPacket *packet)
 {
-    if (!packet) return;
-    if (!enqueuePacket(packet)) {
-        PacketPool::get().release(packet);
-    }
+    enqueuePacket(PacketHandle(packet));
 }
 
 void Decoder::run()
 {
     while (!m_stopping.load(std::memory_order_acquire)) {
-        AVPacket *packet = nullptr;
+        PacketHandle packet;
         {
             QMutexLocker locker(&m_queueMutex);
             while (m_packetQueue.isEmpty() &&
@@ -194,7 +190,9 @@ void Decoder::run()
             }
 
             if (m_stopping.load(std::memory_order_acquire)) break;
-            if (!m_packetQueue.isEmpty()) packet = m_packetQueue.dequeue();
+            if (!m_packetQueue.isEmpty()) {
+                packet.reset(m_packetQueue.dequeue());
+            }
         }
 
         if (!packet) continue;
@@ -204,24 +202,19 @@ void Decoder::run()
             if (m_recvFrame) av_frame_unref(m_recvFrame);
         }
 
-        decodePacket(packet);
+        decodePacket(std::move(packet));
     }
 }
 
-void Decoder::decodePacket(AVPacket *packet)
+void Decoder::decodePacket(PacketHandle packet)
 {
-    auto packetDeleter = [](AVPacket *value) {
-        PacketPool::get().release(value);
-    };
-    std::unique_ptr<AVPacket, decltype(packetDeleter)> packetGuard(packet, packetDeleter);
-
     if (!packet || !m_codecCtx || !m_recvFrame ||
         !m_codecOpen.load(std::memory_order_acquire)) {
         return;
     }
 
     while (!m_stopping.load(std::memory_order_acquire)) {
-        const int sendResult = avcodec_send_packet(m_codecCtx.get(), packet);
+        const int sendResult = avcodec_send_packet(m_codecCtx.get(), packet.get());
         if (sendResult == AVERROR(EAGAIN)) {
             drainDecodedFrames();
             continue;

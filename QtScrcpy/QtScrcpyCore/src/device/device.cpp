@@ -106,7 +106,9 @@ void Device::showTouch(bool show)
 {
     auto *adb = new AdbProcess();
     connect(adb, &AdbProcess::adbProcessResult, adb,
-            [adb](AdbProcess::ADB_EXEC_RESULT) { adb->deleteLater(); });
+            [adb](AdbProcess::ADB_EXEC_RESULT result) {
+        if (result != AdbProcess::AER_SUCCESS_START) adb->deleteLater();
+    });
     adb->setShowTouchesEnabled(getSerial(), show);
 }
 
@@ -211,7 +213,7 @@ void Device::initSignals()
                 PacketHandle copy = clonePacketReference(packet.get());
                 if (copy && m_recorder->push(copy.get())) copy.release();
             }
-            if (m_decoder) m_decoder->enqueuePacket(std::move(packet));
+            if (m_decoder) (void)m_decoder->enqueuePacket(std::move(packet));
         }, Qt::DirectConnection);
 
         connect(m_stream.get(), &Demuxer::getConfigFrame, this,
@@ -261,6 +263,13 @@ bool Device::connectDevice()
 
 void Device::disconnectDevice()
 {
+    bool expected = false;
+    if (!m_disconnecting.compare_exchange_strong(expected, true,
+                                                 std::memory_order_acq_rel,
+                                                 std::memory_order_acquire)) {
+        return;
+    }
+
     if (m_server) { m_server->stop(); m_server.reset(); }
     if (m_stream) { m_stream->stopDecode(); m_stream.reset(); }
     if (m_decoder) { m_decoder->close(); m_decoder.reset(); }
@@ -272,6 +281,7 @@ void Device::disconnectDevice()
     m_fileHandler.reset();
     if (m_serverStartSuccess) emit deviceDisconnected(m_params.serial);
     m_serverStartSuccess = false;
+    m_disconnecting.store(false, std::memory_order_release);
 }
 
 void Device::postGoBack() { if (m_controller) { m_controller->postGoBack(); forEachObserver([](DeviceObserver &o){ o.postGoBack(); }); } }

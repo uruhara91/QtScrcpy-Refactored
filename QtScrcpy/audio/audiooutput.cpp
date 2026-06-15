@@ -53,6 +53,7 @@ constexpr int BYTES_PER_FRAME = CHANNELS * BYTES_PER_SAMPLE;
 constexpr int BYTES_PER_MILLISECOND = SAMPLE_RATE * BYTES_PER_FRAME / 1000;
 constexpr int CONNECT_TIMEOUT_MS = 6000;
 constexpr int CONNECT_RETRY_MS = 75;
+constexpr int DISCONNECT_DIAGNOSTIC_DELAY_MS = 100;
 
 [[nodiscard]] int boundedEnvironmentValue(const char *name,
                                           int fallback,
@@ -207,7 +208,12 @@ struct ScrcpyAudioWorker::Impl
     bool active = false;
     bool announcedStarted = false;
     bool stopping = false;
+    bool disconnectDiagnosticPending = false;
     quint64 latencyDrops = 0;
+    quint64 packetsReceived = 0;
+    quint64 framesDecoded = 0;
+    quint64 pcmBytesQueued = 0;
+    quint64 pcmBytesWritten = 0;
 
     [[nodiscard]] bool runAdb(const QStringList &arguments,
                               int timeoutMs,
@@ -249,11 +255,27 @@ struct ScrcpyAudioWorker::Impl
         return true;
     }
 
+    [[nodiscard]] QString takeServerOutput()
+    {
+        if (!serverProcess) return {};
+        return QString::fromUtf8(serverProcess->readAll()).trimmed();
+    }
+
     void fail(const QString &message)
     {
         if (stopping) return;
+        qWarning().noquote() << message;
         emit q->errorOccurred(message);
         stop(true);
+    }
+
+    void resetStatistics() noexcept
+    {
+        latencyDrops = 0;
+        packetsReceived = 0;
+        framesDecoded = 0;
+        pcmBytesQueued = 0;
+        pcmBytesWritten = 0;
     }
 
     void start(const QString &newSerial,
@@ -281,8 +303,8 @@ struct ScrcpyAudioWorker::Impl
         adbPath = QString::fromLocal8Bit(qgetenv("QTSCRCPY_ADB_PATH"));
         if (adbPath.isEmpty()) adbPath = QStringLiteral("adb");
 
-        scid = QRandomGenerator::global()->generate();
-        if (scid == std::numeric_limits<quint32>::max()) --scid;
+        // scrcpy parses scid as a signed Java int in hexadecimal.
+        scid = QRandomGenerator::global()->generate() & 0x7fffffffU;
         const QString scidHex = QStringLiteral("%1").arg(
             scid, 8, 16, QLatin1Char('0'));
         socketName = QStringLiteral("scrcpy_%1").arg(scidHex);
@@ -292,7 +314,8 @@ struct ScrcpyAudioWorker::Impl
         active = true;
         stopping = false;
         announcedStarted = false;
-        latencyDrops = 0;
+        disconnectDiagnosticPending = false;
+        resetStatistics();
 
         if (!runAdb({QStringLiteral("push"), serverPath, remoteServerPath}, 15000)) {
             fail(QStringLiteral("Audio: failed to push scrcpy-server"));
@@ -317,12 +340,10 @@ struct ScrcpyAudioWorker::Impl
     void startServerProcess(const QString &scidHex)
     {
         serverProcess = new QProcess(q);
-        serverProcess->setProcessChannelMode(QProcess::SeparateChannels);
+        serverProcess->setProcessChannelMode(QProcess::MergedChannels);
 
-        QObject::connect(serverProcess, &QProcess::readyReadStandardError, q, [this]() {
-            if (!serverProcess) return;
-            const QString output = QString::fromUtf8(
-                serverProcess->readAllStandardError()).trimmed();
+        QObject::connect(serverProcess, &QProcess::readyRead, q, [this]() {
+            const QString output = takeServerOutput();
             if (!output.isEmpty()) qInfo().noquote() << "[Audio server]" << output;
         });
 
@@ -331,11 +352,15 @@ struct ScrcpyAudioWorker::Impl
             qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
             q,
             [this](int exitCode, QProcess::ExitStatus status) {
-                if (!stopping && active) {
-                    fail(QStringLiteral("Audio: scrcpy-server stopped (%1/%2)")
-                             .arg(exitCode)
-                             .arg(static_cast<int>(status)));
-                }
+                const QString output = takeServerOutput();
+                if (stopping || !active) return;
+
+                QString message = QStringLiteral(
+                    "Audio: scrcpy-server stopped (exit=%1, status=%2)")
+                                      .arg(exitCode)
+                                      .arg(static_cast<int>(status));
+                if (!output.isEmpty()) message += QStringLiteral(": ") + output;
+                fail(message);
             });
 
         QStringList params;
@@ -343,7 +368,7 @@ struct ScrcpyAudioWorker::Impl
         params << QStringLiteral("CLASSPATH=%1").arg(remoteServerPath);
         params << "app_process" << "/" << "com.genymobile.scrcpy.Server";
         params << serverVersion;
-        params << "log_level=warn";
+        params << "log_level=info";
         params << QStringLiteral("scid=%1").arg(scidHex);
         params << "tunnel_forward=true";
         params << "video=false";
@@ -355,7 +380,7 @@ struct ScrcpyAudioWorker::Impl
         params << "send_device_meta=false";
         params << "send_frame_meta=true";
         params << "send_dummy_byte=true";
-        params << "raw_audio_stream=false";
+        params << "send_codec_meta=true";
         params << "cleanup=true";
 
         serverProcess->start(adbPath, params);
@@ -394,9 +419,25 @@ struct ScrcpyAudioWorker::Impl
             receiveAudioData();
         });
         QObject::connect(socket, &QTcpSocket::disconnected, q, [this]() {
-            if (!stopping && active) {
-                fail(QStringLiteral("Audio: device audio stream disconnected"));
-            }
+            // A short-lived failed stream may write codec id 0/1 and close in
+            // the same event-loop iteration. Drain buffered bytes first so the
+            // precise device-side failure is not hidden by a generic EOF.
+            receiveAudioData();
+            if (stopping || !active || disconnectDiagnosticPending) return;
+
+            disconnectDiagnosticPending = true;
+            QTimer::singleShot(DISCONNECT_DIAGNOSTIC_DELAY_MS, q, [this]() {
+                disconnectDiagnosticPending = false;
+                if (stopping || !active) return;
+
+                receiveAudioData();
+                if (stopping || !active) return;
+
+                const QString output = takeServerOutput();
+                QString message = QStringLiteral("Audio: device audio stream disconnected");
+                if (!output.isEmpty()) message += QStringLiteral(": ") + output;
+                fail(message);
+            });
         });
     }
 
@@ -420,7 +461,8 @@ struct ScrcpyAudioWorker::Impl
     void receiveAudioData()
     {
         if (!socket || stopping) return;
-        rxBuffer.append(socket->readAll());
+        const QByteArray available = socket->readAll();
+        if (!available.isEmpty()) rxBuffer.append(available);
         processInput();
     }
 
@@ -455,12 +497,12 @@ struct ScrcpyAudioWorker::Impl
 
                 if (codecId == 0) {
                     fail(QStringLiteral(
-                        "Audio: capture is unavailable on this Android device"));
+                        "Audio: capture was disabled by the device. On Android 11, unlock the screen before starting audio; some ROMs may block output capture."));
                     return;
                 }
                 if (codecId == 1) {
                     fail(QStringLiteral(
-                        "Audio: device audio encoder failed to initialize"));
+                        "Audio: the Android audio encoder failed to initialize Opus."));
                     return;
                 }
                 if (codecId != CODEC_ID_OPUS) {
@@ -469,6 +511,7 @@ struct ScrcpyAudioWorker::Impl
                     return;
                 }
 
+                qInfo() << "[Audio] Opus codec metadata received";
                 if (!openDecoder() || !setupAudioOutput()) return;
 
                 inputState = InputState::PacketStream;
@@ -501,6 +544,11 @@ struct ScrcpyAudioWorker::Impl
             packet->dts = packet->pts;
             if ((ptsFlags & PACKET_FLAG_KEY_FRAME) != 0) {
                 packet->flags |= AV_PKT_FLAG_KEY;
+            }
+
+            ++packetsReceived;
+            if (packetsReceived == 1) {
+                qInfo() << "[Audio] First Opus packet received, bytes:" << payloadSize;
             }
 
             decodePacket(packet);
@@ -552,7 +600,11 @@ struct ScrcpyAudioWorker::Impl
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
         format.setSampleFormat(QAudioFormat::Int16);
         const QAudioDevice device = QMediaDevices::defaultAudioOutput();
-        if (device.isNull() || !device.isFormatSupported(format)) {
+        if (device.isNull()) {
+            fail(QStringLiteral("Audio: no default desktop audio output device"));
+            return false;
+        }
+        if (!device.isFormatSupported(format)) {
             fail(QStringLiteral(
                 "Audio: output device does not support 48 kHz stereo S16"));
             return false;
@@ -573,11 +625,15 @@ struct ScrcpyAudioWorker::Impl
 #endif
 
         audioSink->setBufferSize(audioBufferMs * BYTES_PER_MILLISECOND);
+        audioSink->setVolume(1.0);
         audioIo = audioSink->start();
         if (!audioIo) {
-            fail(QStringLiteral("Audio: failed to start the output device"));
+            fail(QStringLiteral("Audio: failed to start the desktop output device"));
             return false;
         }
+
+        qInfo() << "[Audio] Output sink initialized; buffer ms:"
+                << audioBufferMs << "start ms:" << audioStartMs;
 
         pumpTimer = new QTimer(q);
         pumpTimer->setTimerType(Qt::PreciseTimer);
@@ -618,6 +674,11 @@ struct ScrcpyAudioWorker::Impl
                 return;
             }
 
+            ++framesDecoded;
+            if (framesDecoded == 1) {
+                qInfo() << "[Audio] First PCM frame decoded; samples:"
+                        << frame->nb_samples << "format:" << frame->format;
+            }
             queueDecodedFrame(frame);
             av_frame_unref(frame);
         }
@@ -755,6 +816,10 @@ struct ScrcpyAudioWorker::Impl
         }
 
         pcmRing.push(data, bytes);
+        pcmBytesQueued += bytes;
+        if (pcmBytesQueued == bytes) {
+            qInfo() << "[Audio] First PCM bytes queued:" << bytes;
+        }
         pumpAudio();
     }
 
@@ -783,6 +848,10 @@ struct ScrcpyAudioWorker::Impl
             if (written <= 0) break;
             pcmRing.discard(static_cast<std::size_t>(written));
             freeBytes -= written;
+            pcmBytesWritten += static_cast<quint64>(written);
+            if (pcmBytesWritten == static_cast<quint64>(written)) {
+                qInfo() << "[Audio] First PCM bytes written to sink:" << written;
+            }
         }
 
         if (pcmRing.empty()) playbackPrimed = false;
@@ -821,6 +890,7 @@ struct ScrcpyAudioWorker::Impl
         const bool wasActive = active || announcedStarted;
         stopping = true;
         active = false;
+        disconnectDiagnosticPending = false;
 
         if (connectTimer) {
             connectTimer->stop();

@@ -4,7 +4,8 @@
 #include <QPointer>
 #include <QSize>
 #include <QThread>
-#include <atomic>
+#include <cstddef>
+#include <mutex>
 #include <vector>
 
 extern "C" {
@@ -22,46 +23,52 @@ public:
     }
 
     AVPacket* acquire() {
-        while (m_lock.test_and_set(std::memory_order_acquire)) {
-            QThread::yieldCurrentThread();
-        }
-        
-        AVPacket* pkt = nullptr;
+        std::lock_guard<std::mutex> lock(m_mutex);
         if (m_pool.empty()) {
-            pkt = av_packet_alloc();
-        } else {
-            pkt = m_pool.back();
-            m_pool.pop_back();
+            return av_packet_alloc();
         }
-        
-        m_lock.clear(std::memory_order_release);
-        return pkt;
+
+        AVPacket* packet = m_pool.back();
+        m_pool.pop_back();
+        return packet;
     }
 
-    void release(AVPacket* pkt) {
-        if (!pkt) return;
-        av_packet_unref(pkt);
-        
-        while (m_lock.test_and_set(std::memory_order_acquire)) {
-            QThread::yieldCurrentThread();
+    void release(AVPacket* packet) {
+        if (!packet) return;
+        av_packet_unref(packet);
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_pool.size() < MAX_POOL_SIZE) {
+            m_pool.push_back(packet);
+        } else {
+            av_packet_free(&packet);
         }
-        m_pool.push_back(pkt);
-        m_lock.clear(std::memory_order_release);
     }
 
 private:
-    PacketPool() { 
-        m_pool.reserve(256);
-        for(int i = 0; i < 64; ++i) {
-            m_pool.push_back(av_packet_alloc());
+    static constexpr std::size_t PREALLOCATED_PACKETS = 64;
+    static constexpr std::size_t MAX_POOL_SIZE = 256;
+
+    PacketPool() {
+        m_pool.reserve(MAX_POOL_SIZE);
+        for (std::size_t i = 0; i < PREALLOCATED_PACKETS; ++i) {
+            if (AVPacket* packet = av_packet_alloc()) {
+                m_pool.push_back(packet);
+            }
         }
     }
+
     ~PacketPool() {
-        for (auto p : m_pool) av_packet_free(&p);
+        for (AVPacket* packet : m_pool) {
+            av_packet_free(&packet);
+        }
     }
-    
+
+    PacketPool(const PacketPool&) = delete;
+    PacketPool& operator=(const PacketPool&) = delete;
+
     std::vector<AVPacket*> m_pool;
-    std::atomic_flag m_lock = ATOMIC_FLAG_INIT;
+    std::mutex m_mutex;
 };
 
 class Demuxer : public QThread
@@ -76,7 +83,7 @@ public:
 
     void installVideoSocket(VideoSocket* videoSocket);
     void setFrameSize(const QSize &frameSize);
-    
+
     [[nodiscard]] bool startDecode();
     void stopDecode();
 
@@ -89,7 +96,6 @@ protected:
     void run() override;
 
 private:
-    // Pipeline Refactored
     bool processNetworkPacket(AVPacket *packet);
     bool parse(AVPacket *packet);
     qint32 recvData(quint8 *buf, qint32 bufSize);
@@ -100,10 +106,9 @@ private:
 
     AVCodecContext *m_codecCtx = nullptr;
     AVCodecParserContext *m_parser = nullptr;
-    
-    std::vector<uint8_t> m_configBuffer;
 
-    std::atomic<bool> m_isInterrupted { false };
+    std::vector<uint8_t> m_configBuffer;
+    std::atomic<bool> m_isInterrupted{false};
 };
 
 #endif // STREAM_H

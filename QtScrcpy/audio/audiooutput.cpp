@@ -593,6 +593,26 @@ struct ScrcpyAudioWorker::Impl
                 PACKET_HEADER_SIZE + static_cast<quint64>(payloadSize);
             if (completeSize > static_cast<quint64>(available)) break;
 
+            const bool isConfigPacket =
+                (ptsFlags & PACKET_FLAG_CONFIG) != 0;
+            ++packetsReceived;
+            if (packetsReceived == 1) {
+                qInfo() << "[Audio] First Opus packet received, bytes:"
+                        << payloadSize
+                        << "config:"
+                        << isConfigPacket;
+            }
+
+            // scrcpy's official decoder intentionally ignores audio codec
+            // configuration packets (pts == AV_NOPTS_VALUE). For Opus this is
+            // typically a 19-byte OpusHead packet, not decodable audio data.
+            // Skip it before AVPacket allocation and memcpy.
+            if (isConfigPacket) {
+                qInfo() << "[Audio] Opus codec configuration accepted";
+                inputOffset += static_cast<qsizetype>(completeSize);
+                continue;
+            }
+
             if (av_new_packet(packet, static_cast<int>(payloadSize)) < 0) {
                 fail(QStringLiteral("Audio: packet allocation failed"));
                 return;
@@ -601,20 +621,11 @@ struct ScrcpyAudioWorker::Impl
             std::memcpy(packet->data,
                         data + PACKET_HEADER_SIZE,
                         payloadSize);
-            packet->pts = (ptsFlags & PACKET_FLAG_CONFIG)
-                ? AV_NOPTS_VALUE
-                : static_cast<qint64>(ptsFlags & PACKET_PTS_MASK);
+            packet->pts = static_cast<qint64>(
+                ptsFlags & PACKET_PTS_MASK);
             packet->dts = packet->pts;
             if ((ptsFlags & PACKET_FLAG_KEY_FRAME) != 0) {
                 packet->flags |= AV_PKT_FLAG_KEY;
-            }
-
-            ++packetsReceived;
-            if (packetsReceived == 1) {
-                qInfo() << "[Audio] First Opus packet received, bytes:"
-                        << payloadSize
-                        << "config:"
-                        << ((ptsFlags & PACKET_FLAG_CONFIG) != 0);
             }
 
             decodePacket(packet);

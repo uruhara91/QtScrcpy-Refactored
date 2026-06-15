@@ -7,6 +7,26 @@
 
 namespace qsc {
 
+class FrameSink {
+protected:
+    FrameSink() = default;
+    virtual ~FrameSink() = default;
+
+public:
+    // Called on the GUI thread before/after registration. Implementations may
+    // publish or revoke thread-safe producer state here.
+    virtual void activateFrameSink() noexcept {}
+    virtual void deactivateFrameSink() noexcept {}
+
+    // Called directly from the decoder worker. Implementations must not touch
+    // QObject/QWidget state that is confined to the GUI thread.
+    virtual void submitFrame(int width, int height,
+                             std::span<const uint8_t> dataY,
+                             std::span<const uint8_t> dataU,
+                             std::span<const uint8_t> dataV,
+                             int linesizeY, int linesizeU, int linesizeV) noexcept = 0;
+};
+
 class DeviceObserver {
 protected:
     DeviceObserver() {
@@ -17,10 +37,10 @@ protected:
     }
 
 public:
-    virtual void onFrame(int width, int height, 
-                         std::span<const uint8_t> dataY, 
-                         std::span<const uint8_t> dataU, 
-                         std::span<const uint8_t> dataV, 
+    virtual void onFrame(int width, int height,
+                         std::span<const uint8_t> dataY,
+                         std::span<const uint8_t> dataU,
+                         std::span<const uint8_t> dataV,
                          int linesizeY, int linesizeU, int linesizeV) = 0;
     virtual void updateFPS(quint32 fps) { Q_UNUSED(fps); }
     virtual void grabCursor(bool grab) {Q_UNUSED(grab);}
@@ -85,6 +105,8 @@ public:
     virtual void* getUserData() = 0;
     virtual void registerDeviceObserver(DeviceObserver* observer) = 0;
     virtual void deRegisterDeviceObserver(DeviceObserver* observer) = 0;
+    virtual void registerFrameSink(FrameSink* sink) = 0;
+    virtual void deRegisterFrameSink(FrameSink* sink) = 0;
 
     virtual bool connectDevice() = 0;
     virtual void disconnectDevice() = 0;

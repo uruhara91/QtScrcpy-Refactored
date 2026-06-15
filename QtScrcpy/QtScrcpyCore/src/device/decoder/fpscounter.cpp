@@ -12,7 +12,7 @@ void FpsCounter::start()
     if (m_counterTimer != 0) return;
 
     resetCounter();
-    m_counterTimer = startTimer(1000, Qt::PreciseTimer);
+    m_counterTimer = startTimer(1000);
 }
 
 void FpsCounter::stop()

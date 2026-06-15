@@ -13,13 +13,9 @@ protected:
     virtual ~FrameSink() = default;
 
 public:
-    // Called on the GUI thread before/after registration. Implementations may
-    // publish or revoke thread-safe producer state here.
     virtual void activateFrameSink() noexcept {}
     virtual void deactivateFrameSink() noexcept {}
 
-    // Called directly from the decoder worker. Implementations must not touch
-    // QObject/QWidget state that is confined to the GUI thread.
     virtual void submitFrame(int width, int height,
                              std::span<const uint8_t> dataY,
                              std::span<const uint8_t> dataU,
@@ -29,21 +25,27 @@ public:
 
 class DeviceObserver {
 protected:
-    DeviceObserver() {
-
-    }
-    virtual ~DeviceObserver() {
-
-    }
+    DeviceObserver() = default;
+    virtual ~DeviceObserver() = default;
 
 public:
     virtual void onFrame(int width, int height,
                          std::span<const uint8_t> dataY,
                          std::span<const uint8_t> dataU,
                          std::span<const uint8_t> dataV,
-                         int linesizeY, int linesizeU, int linesizeV) = 0;
+                         int linesizeY, int linesizeU, int linesizeV)
+    {
+        Q_UNUSED(width);
+        Q_UNUSED(height);
+        Q_UNUSED(dataY);
+        Q_UNUSED(dataU);
+        Q_UNUSED(dataV);
+        Q_UNUSED(linesizeY);
+        Q_UNUSED(linesizeU);
+        Q_UNUSED(linesizeV);
+    }
     virtual void updateFPS(quint32 fps) { Q_UNUSED(fps); }
-    virtual void grabCursor(bool grab) {Q_UNUSED(grab);}
+    virtual void grabCursor(bool grab) { Q_UNUSED(grab); }
 
     virtual void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize) {
         Q_UNUSED(from);
@@ -70,10 +72,7 @@ public:
     virtual void postVolumeDown() {}
     virtual void postCopy() {}
     virtual void postCut() {}
-    virtual void setDisplayPower(bool on)
-    {
-        Q_UNUSED(on);
-    }
+    virtual void setDisplayPower(bool on) { Q_UNUSED(on); }
     virtual void expandNotificationPanel() {}
     virtual void collapsePanel() {}
     virtual void postBackOrScreenOn(bool down) { Q_UNUSED(down); }

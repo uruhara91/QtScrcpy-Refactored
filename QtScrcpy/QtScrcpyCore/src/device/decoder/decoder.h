@@ -12,7 +12,7 @@
 #include <memory>
 #include <span>
 
-#include "demuxer.h"
+#include "../demuxer/demuxer.h"
 
 extern "C" {
 #include "libavcodec/avcodec.h"

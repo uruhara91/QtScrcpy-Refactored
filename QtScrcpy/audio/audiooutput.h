@@ -40,11 +40,11 @@ public:
 
     // Starts a dedicated scrcpy-server audio-only session. The request is
     // asynchronous; completion is reported through started()/errorOccurred().
-    [[nodiscard]] bool start(const QString &serial, int port = 28200);
+    bool start(const QString &serial, int port = 28200);
     void stop();
 
     // Retained for source/UI compatibility. Native scrcpy audio needs no APK.
-    [[nodiscard]] bool install(const QString &serial);
+    bool install(const QString &serial);
 
 signals:
     void started();

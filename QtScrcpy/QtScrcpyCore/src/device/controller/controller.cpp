@@ -2,6 +2,7 @@
 #include <QClipboard>
 #include <QMetaObject>
 #include <QThread>
+#include <utility>
 
 #include "controller.h"
 #include "controlmsg.h"
@@ -16,8 +17,6 @@ Controller::Controller(std::function<qint64(const QByteArray&)> sendData, QStrin
     Q_ASSERT(m_receiver);
     updateScript(gameScript);
 
-    // Batch only while input is pending. This avoids a permanent 125 Hz wake-up
-    // while preserving the order of every control message.
     m_networkTimer.setSingleShot(true);
     m_networkTimer.setInterval(1);
     m_networkTimer.setTimerType(Qt::PreciseTimer);
@@ -38,20 +37,22 @@ void Controller::postControlMsg(ControlMsg *controlMsg)
     delete controlMsg;
 }
 
-void Controller::scheduleNetworkFlush()
+void Controller::scheduleNetworkFlush(int delayMs)
 {
     if (m_stopping.load(std::memory_order_acquire)) return;
+    const int safeDelay = qMax(0, delayMs);
 
     if (QThread::currentThread() == thread()) {
-        if (!m_networkTimer.isActive()) {
-            m_networkTimer.start();
+        if (!m_networkTimer.isActive() || m_networkTimer.remainingTime() > safeDelay) {
+            m_networkTimer.start(safeDelay);
         }
         return;
     }
 
-    QMetaObject::invokeMethod(this, [this]() {
-        if (!m_stopping.load(std::memory_order_acquire) && !m_networkTimer.isActive()) {
-            m_networkTimer.start();
+    QMetaObject::invokeMethod(this, [this, safeDelay]() {
+        if (m_stopping.load(std::memory_order_acquire)) return;
+        if (!m_networkTimer.isActive() || m_networkTimer.remainingTime() > safeDelay) {
+            m_networkTimer.start(safeDelay);
         }
     }, Qt::QueuedConnection);
 }
@@ -73,18 +74,20 @@ void Controller::flushNetworkBuffer()
     if (written >= dataToSend.size()) return;
 
     if (written < 0) written = 0;
-    QByteArray remaining = dataToSend.mid(static_cast<qsizetype>(written));
+    QByteArray remaining = dataToSend.mid(static_cast<int>(written));
     if (remaining.isEmpty()) return;
 
     {
         std::lock_guard<std::mutex> lock(m_bufferMutex);
-        // The unsent prefix must remain ahead of messages queued while write()
-        // was running, otherwise input ordering would be corrupted.
         m_sendBuffer.prepend(remaining);
     }
 
-    if (!m_stopping.load(std::memory_order_acquire)) {
-        scheduleNetworkFlush();
+    if (m_stopping.load(std::memory_order_acquire)) return;
+
+    if (written > 0) {
+        scheduleNetworkFlush(1);
+    } else {
+        scheduleNetworkFlush(10);
     }
 }
 
@@ -233,7 +236,7 @@ bool Controller::sendControl(const QByteArray &buffer)
         m_sendBuffer.append(buffer);
     }
 
-    scheduleNetworkFlush();
+    scheduleNetworkFlush(1);
     return true;
 }
 

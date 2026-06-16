@@ -93,6 +93,7 @@ private:
             struct
             {
                 char *text = Q_NULLPTR;
+                quint32 length = 0;
             } injectText;
             struct
             {
@@ -122,6 +123,7 @@ private:
             {
                 uint64_t sequence = 0;
                 char *text = Q_NULLPTR;
+                quint32 length = 0;
                 bool paste = true;
             } setClipboard;
             struct

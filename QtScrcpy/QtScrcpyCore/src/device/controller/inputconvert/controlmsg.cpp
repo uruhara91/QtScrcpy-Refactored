@@ -214,16 +214,22 @@ int ControlMsg::serializeTo(std::span<char> output) const noexcept
 
 QByteArray ControlMsg::serializeData() const
 {
-    std::array<char, INLINE_SERIALIZED_CAPACITY> inlineBuffer{};
-    const int inlineSize = serializeTo(inlineBuffer);
+    // Reuse one allocation per calling thread. Returning QByteArray by value
+    // remains safe: Qt's implicit sharing detaches automatically if a caller
+    // keeps an older result alive while a later message is serialized.
+    thread_local QByteArray result;
+
+    result.resize(INLINE_SERIALIZED_CAPACITY);
+    const int inlineSize = serializeTo(
+        std::span<char>(result.data(), static_cast<std::size_t>(result.size())));
     if (inlineSize > 0) {
-        return QByteArray(inlineBuffer.data(), inlineSize);
+        result.resize(inlineSize);
+        return result;
     }
 
     if (m_data.type == CMT_INJECT_TEXT) {
         const char *text = m_data.injectText.text ? m_data.injectText.text : "";
         const int length = static_cast<int>(std::strlen(text));
-        QByteArray result;
         result.resize(5 + length);
         char *cursor = result.data();
         *cursor++ = static_cast<char>(m_data.type);
@@ -235,7 +241,6 @@ QByteArray ControlMsg::serializeData() const
     if (m_data.type == CMT_SET_CLIPBOARD) {
         const char *text = m_data.setClipboard.text ? m_data.setClipboard.text : "";
         const int length = static_cast<int>(std::strlen(text));
-        QByteArray result;
         result.resize(14 + length);
         char *cursor = result.data();
         *cursor++ = static_cast<char>(m_data.type);
@@ -246,5 +251,6 @@ QByteArray ControlMsg::serializeData() const
         return result;
     }
 
-    return {};
+    result.clear();
+    return result;
 }

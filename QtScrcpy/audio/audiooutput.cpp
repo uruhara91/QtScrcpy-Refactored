@@ -58,8 +58,14 @@ constexpr int BYTES_PER_SAMPLE = 2;
 constexpr int BYTES_PER_FRAME = CHANNELS * BYTES_PER_SAMPLE;
 constexpr int BYTES_PER_MS = SAMPLE_RATE * BYTES_PER_FRAME / 1000;
 
+// Stable low-latency profile measured on the target PipeWire/Qt backend.
+constexpr int DEFAULT_OUTPUT_BUFFER_MS = 25;
+constexpr int DEFAULT_START_BUFFER_MS = 10;
+constexpr int DEFAULT_MAXIMUM_BUFFER_MS = 80;
+
 constexpr int CONNECT_TIMEOUT_MS = 8000;
 constexpr int CONNECT_RETRY_MS = 100;
+constexpr qint64 STARTUP_RECOVERY_WINDOW_MS = 1000;
 
 [[nodiscard]] int boundedEnvironmentValue(const char *name,
                                           int fallback,
@@ -89,6 +95,11 @@ constexpr int CONNECT_RETRY_MS = 100;
 {
     return (static_cast<quint64>(read32be(data)) << 32) |
            static_cast<quint64>(read32be(data + 4));
+}
+
+[[nodiscard]] double bytesToMilliseconds(quint64 bytes) noexcept
+{
+    return static_cast<double>(bytes) / static_cast<double>(BYTES_PER_MS);
 }
 
 class PcmRingBuffer
@@ -162,15 +173,26 @@ struct ScrcpyAudioWorker::Impl
     explicit Impl(ScrcpyAudioWorker *owner)
         : q(owner)
         , outputBufferMs(boundedEnvironmentValue(
-              "QTSCRCPY_AUDIO_BUFFER_MS", 40, 20, 200))
+              "QTSCRCPY_AUDIO_BUFFER_MS",
+              DEFAULT_OUTPUT_BUFFER_MS,
+              20,
+              200))
         , startBufferMs(boundedEnvironmentValue(
-              "QTSCRCPY_AUDIO_START_MS", 20, 5, 100))
+              "QTSCRCPY_AUDIO_START_MS",
+              DEFAULT_START_BUFFER_MS,
+              5,
+              100))
         , maximumBufferMs(boundedEnvironmentValue(
-              "QTSCRCPY_AUDIO_MAX_MS", 120, 40, 300))
+              "QTSCRCPY_AUDIO_MAX_MS",
+              DEFAULT_MAXIMUM_BUFFER_MS,
+              40,
+              300))
+        , telemetryEnabled(environmentEnabled("QTSCRCPY_TELEMETRY", false))
         , pcmRing(static_cast<std::size_t>(
               std::max(maximumBufferMs + 40, 160) * BYTES_PER_MS))
     {
         inputBuffer.reserve(64 * 1024);
+        conversionBuffer.reserve(8 * 1024);
     }
 
     ~Impl()
@@ -193,8 +215,10 @@ struct ScrcpyAudioWorker::Impl
     QTimer *retryTimer = nullptr;
     QTimer *pumpTimer = nullptr;
     QElapsedTimer connectElapsed;
+    QElapsedTimer playbackElapsed;
 
     QByteArray inputBuffer;
+    QByteArray conversionBuffer;
     qsizetype inputOffset = 0;
     InputState inputState = InputState::DummyByte;
 
@@ -215,6 +239,7 @@ struct ScrcpyAudioWorker::Impl
     const int outputBufferMs;
     const int startBufferMs;
     const int maximumBufferMs;
+    const bool telemetryEnabled;
     PcmRingBuffer pcmRing;
 
     bool active = false;
@@ -225,10 +250,18 @@ struct ScrcpyAudioWorker::Impl
     int connectionAttempts = 0;
 
     quint64 packetsReceived = 0;
+    quint64 configPacketsSkipped = 0;
     quint64 framesDecoded = 0;
     quint64 pcmBytesQueued = 0;
     quint64 pcmBytesWritten = 0;
-    quint64 latencyRecoveries = 0;
+    quint64 maxPcmQueueBytes = 0;
+    quint64 startupLatencyRecoveries = 0;
+    quint64 steadyLatencyRecoveries = 0;
+    quint64 sinkUnderruns = 0;
+    quint64 sinkErrors = 0;
+    quint64 sinkWriteStalls = 0;
+    qint64 requestedSinkBufferBytes = 0;
+    qint64 actualSinkBufferBytes = 0;
 
     [[nodiscard]] bool runAdb(const QStringList &arguments,
                               int timeoutMs,
@@ -313,13 +346,46 @@ struct ScrcpyAudioWorker::Impl
         inputState = InputState::DummyByte;
         protocolStarted = false;
         playbackPrimed = false;
+        playbackElapsed.invalidate();
         connectionAttempts = 0;
         packetsReceived = 0;
+        configPacketsSkipped = 0;
         framesDecoded = 0;
         pcmBytesQueued = 0;
         pcmBytesWritten = 0;
-        latencyRecoveries = 0;
+        maxPcmQueueBytes = 0;
+        startupLatencyRecoveries = 0;
+        steadyLatencyRecoveries = 0;
+        sinkUnderruns = 0;
+        sinkErrors = 0;
+        sinkWriteStalls = 0;
+        requestedSinkBufferBytes = 0;
+        actualSinkBufferBytes = 0;
         pcmRing.clear();
+    }
+
+    void logTelemetry() const
+    {
+        if (!telemetryEnabled || !announcedStarted) return;
+
+        qInfo().nospace()
+            << "Audio stats - packets: " << packetsReceived
+            << " config skipped: " << configPacketsSkipped
+            << " decoded frames: " << framesDecoded
+            << " pcm queued: " << pcmBytesQueued
+            << " pcm written: " << pcmBytesWritten
+            << " requested sink: "
+            << bytesToMilliseconds(
+                   static_cast<quint64>(std::max<qint64>(requestedSinkBufferBytes, 0)))
+            << "ms actual sink: "
+            << bytesToMilliseconds(
+                   static_cast<quint64>(std::max<qint64>(actualSinkBufferBytes, 0)))
+            << "ms max queue: " << bytesToMilliseconds(maxPcmQueueBytes)
+            << "ms startup recoveries: " << startupLatencyRecoveries
+            << " steady recoveries: " << steadyLatencyRecoveries
+            << " underruns: " << sinkUnderruns
+            << " sink errors: " << sinkErrors
+            << " write stalls: " << sinkWriteStalls;
     }
 
     void start(const QString &newSerial,
@@ -415,7 +481,7 @@ struct ScrcpyAudioWorker::Impl
         args << QStringLiteral("CLASSPATH=%1").arg(remoteServerPath);
         args << "app_process" << "/" << "com.genymobile.scrcpy.Server";
         args << serverVersion;
-        args << "log_level=debug";
+        args << (telemetryEnabled ? "log_level=debug" : "log_level=warn");
         args << QStringLiteral("scid=%1").arg(scidHex);
         args << "tunnel_forward=true";
         args << "video=false";
@@ -608,6 +674,7 @@ struct ScrcpyAudioWorker::Impl
             // typically a 19-byte OpusHead packet, not decodable audio data.
             // Skip it before AVPacket allocation and memcpy.
             if (isConfigPacket) {
+                ++configPacketsSkipped;
                 qInfo() << "[Audio] Opus codec configuration accepted";
                 inputOffset += static_cast<qsizetype>(completeSize);
                 continue;
@@ -688,6 +755,21 @@ struct ScrcpyAudioWorker::Impl
             return false;
         }
         audioSink = new QAudioSink(device, format, q);
+        QObject::connect(audioSink, &QAudioSink::stateChanged, q,
+                         [this](QtAudio::State state) {
+            if (!active || stopping) return;
+            if (state == QtAudio::IdleState &&
+                playbackElapsed.isValid() &&
+                playbackElapsed.elapsed() >= STARTUP_RECOVERY_WINDOW_MS) {
+                ++sinkUnderruns;
+            }
+            if (state == QtAudio::StoppedState &&
+                audioSink && audioSink->error() != QtAudio::NoError) {
+                ++sinkErrors;
+                qWarning() << "[Audio] Output sink error:"
+                           << static_cast<int>(audioSink->error());
+            }
+        });
 #else
         format.setSampleSize(16);
         format.setCodec(QStringLiteral("audio/pcm"));
@@ -700,18 +782,42 @@ struct ScrcpyAudioWorker::Impl
             return false;
         }
         audioSink = new QAudioOutput(device, format, q);
+        QObject::connect(audioSink, &QAudioOutput::stateChanged, q,
+                         [this](QAudio::State state) {
+            if (!active || stopping) return;
+            if (state == QAudio::IdleState &&
+                playbackElapsed.isValid() &&
+                playbackElapsed.elapsed() >= STARTUP_RECOVERY_WINDOW_MS) {
+                ++sinkUnderruns;
+            }
+            if (state == QAudio::StoppedState &&
+                audioSink && audioSink->error() != QAudio::NoError) {
+                ++sinkErrors;
+                qWarning() << "[Audio] Output sink error:"
+                           << static_cast<int>(audioSink->error());
+            }
+        });
 #endif
 
-        audioSink->setBufferSize(outputBufferMs * BYTES_PER_MS);
+        requestedSinkBufferBytes =
+            static_cast<qint64>(outputBufferMs) * BYTES_PER_MS;
+        audioSink->setBufferSize(static_cast<int>(requestedSinkBufferBytes));
         audioSink->setVolume(1.0);
         audioIo = audioSink->start();
         if (!audioIo) {
             fail(QStringLiteral("Audio: failed to start desktop output"));
             return false;
         }
+        actualSinkBufferBytes = audioSink->bufferSize();
 
-        qInfo() << "[Audio] Output sink initialized; buffer ms:"
-                << outputBufferMs << "start ms:" << startBufferMs;
+        qInfo() << "[Audio] Output sink initialized; requested ms:"
+                << outputBufferMs
+                << "actual ms:"
+                << bytesToMilliseconds(
+                       static_cast<quint64>(
+                           std::max<qint64>(actualSinkBufferBytes, 0)))
+                << "start ms:"
+                << startBufferMs;
 
         pumpTimer = new QTimer(q);
         pumpTimer->setTimerType(Qt::PreciseTimer);
@@ -859,9 +965,12 @@ struct ScrcpyAudioWorker::Impl
             AV_ROUND_UP));
         if (outputSamples <= 0) return;
 
-        QByteArray pcm(outputSamples * BYTES_PER_FRAME, Qt::Uninitialized);
+        // Reuse the same allocation for every decoded Opus frame. FFmpeg's
+        // Opus decoder commonly outputs planar float, so this removes roughly
+        // 50 short-lived heap allocations per second from the steady-state path.
+        conversionBuffer.resize(outputSamples * BYTES_PER_FRAME);
         std::array<uint8_t *, 1> output = {
-            reinterpret_cast<uint8_t *>(pcm.data())
+            reinterpret_cast<uint8_t *>(conversionBuffer.data())
         };
         std::array<const uint8_t *, AV_NUM_DATA_POINTERS> inputData{};
         for (std::size_t i = 0; i < inputData.size(); ++i) {
@@ -876,8 +985,9 @@ struct ScrcpyAudioWorker::Impl
             input->nb_samples);
         if (converted <= 0) return;
 
-        pcm.resize(converted * BYTES_PER_FRAME);
-        queuePcm(pcm.constData(), static_cast<std::size_t>(pcm.size()));
+        const std::size_t convertedBytes = static_cast<std::size_t>(
+            converted * BYTES_PER_FRAME);
+        queuePcm(conversionBuffer.constData(), convertedBytes);
     }
 
     void queuePcm(const char *data, std::size_t bytes)
@@ -893,15 +1003,26 @@ struct ScrcpyAudioWorker::Impl
             if (pcmRing.size() > keepBeforePush) {
                 pcmRing.discard(pcmRing.size() - keepBeforePush);
             }
-            ++latencyRecoveries;
-            if (latencyRecoveries == 1 ||
-                latencyRecoveries % 100 == 0) {
+
+            if (!playbackElapsed.isValid() ||
+                playbackElapsed.elapsed() < STARTUP_RECOVERY_WINDOW_MS) {
+                ++startupLatencyRecoveries;
+            } else {
+                ++steadyLatencyRecoveries;
+            }
+
+            const quint64 totalRecoveries =
+                startupLatencyRecoveries + steadyLatencyRecoveries;
+            if (totalRecoveries == 1 || totalRecoveries % 100 == 0) {
                 qWarning() << "[Audio] Latency recovery events:"
-                           << latencyRecoveries;
+                           << totalRecoveries;
             }
         }
 
         pcmRing.push(data, bytes);
+        maxPcmQueueBytes = std::max<quint64>(
+            maxPcmQueueBytes,
+            static_cast<quint64>(pcmRing.size()));
         pcmBytesQueued += bytes;
         if (pcmBytesQueued == bytes) {
             qInfo() << "[Audio] First PCM bytes queued:" << bytes;
@@ -926,11 +1047,15 @@ struct ScrcpyAudioWorker::Impl
             const qint64 requested = std::min<qint64>(
                 freeBytes, static_cast<qint64>(contiguous));
             const qint64 written = audioIo->write(data, requested);
-            if (written <= 0) break;
+            if (written <= 0) {
+                ++sinkWriteStalls;
+                break;
+            }
 
             pcmRing.discard(static_cast<std::size_t>(written));
             freeBytes -= written;
             pcmBytesWritten += static_cast<quint64>(written);
+            if (!playbackElapsed.isValid()) playbackElapsed.start();
             if (pcmBytesWritten == static_cast<quint64>(written)) {
                 qInfo() << "[Audio] First PCM bytes written to sink:"
                         << written;
@@ -974,6 +1099,8 @@ struct ScrcpyAudioWorker::Impl
         stopping = true;
         active = false;
         protocolStarted = false;
+
+        logTelemetry();
 
         if (retryTimer) {
             retryTimer->stop();

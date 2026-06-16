@@ -1,4 +1,4 @@
-﻿#include <QDebug>
+#include <QDebug>
 #include <QFile>
 #include <QFileDialog>
 #include <QKeyEvent>
@@ -803,27 +803,6 @@ void Dialog::on_stopAudioBtn_clicked()
 {
     m_audioOutput.stop();
     outLog("Audio forwarding stopped.", true);
-}
-
-void Dialog::on_installSndcpyBtn_clicked()
-{
-    if (ui->serialBox->count() == 0) {
-        qWarning() << "No device is connected!";
-        return;
-    }
-    
-    QString serial = ui->serialBox->currentText().trimmed();
-    outLog("Installing soundservice...", true);
-    
-    bool success = m_audioOutput.install(serial);
-    
-    if (success) {
-        outLog("soundservice Installed & Configured Successfully!", true);
-        QMessageBox::information(this, "Success", "Audio Forwarder Installed!\nYou can now click 'Start Audio'.");
-    } else {
-        outLog("Installation Failed. Check connection or ADB.", true);
-        QMessageBox::critical(this, "Error", "Installation Failed.\nCheck if 'soundservice.apk' exists in the app folder.");
-    }
 }
 
 void Dialog::on_autoUpdatecheckBox_toggled(bool checked)

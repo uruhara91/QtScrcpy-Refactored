@@ -43,9 +43,6 @@ public:
     bool start(const QString &serial, int port = 28200);
     void stop();
 
-    // Retained for source/UI compatibility. Native scrcpy audio needs no APK.
-    bool install(const QString &serial);
-
 signals:
     void started();
     void stopped();

@@ -987,19 +987,6 @@
              <number>0</number>
             </property>
             <item>
-             <widget class="QPushButton" name="installSndcpyBtn">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="text">
-               <string>install sndcpy</string>
-              </property>
-             </widget>
-            </item>
-            <item>
              <widget class="QPushButton" name="startAudioBtn">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">

@@ -1,4 +1,4 @@
-﻿#ifndef DIALOG_H
+#ifndef DIALOG_H
 #define DIALOG_H
 
 #include <QComboBox>
@@ -70,7 +70,6 @@ private slots:
 
     void on_startAudioBtn_clicked();
     void on_stopAudioBtn_clicked();
-    void on_installSndcpyBtn_clicked();
 
     void on_autoUpdatecheckBox_toggled(bool checked);
     void showIpEditMenu(const QPoint &pos);

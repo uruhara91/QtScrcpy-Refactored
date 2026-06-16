@@ -1240,12 +1240,6 @@ void AudioOutput::stop()
     }
 }
 
-bool AudioOutput::install(const QString &serial)
-{
-    Q_UNUSED(serial)
-    return true;
-}
-
 QString AudioOutput::resolveServerPath() const
 {
     QString path = QString::fromLocal8Bit(qgetenv("QTSCRCPY_SERVER_PATH"));

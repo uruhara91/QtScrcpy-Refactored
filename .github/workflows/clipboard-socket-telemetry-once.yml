@@ -1,0 +1,290 @@
+name: Clipboard socket telemetry
+on:
+  push:
+    branches: [clipboard-hardening]
+    paths: [.github/workflows/clipboard-socket-telemetry-once.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: clipboard-hardening
+      - shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path_name, old, new):
+              path = Path(path_name)
+              text = path.read_text(encoding='utf-8-sig')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path_name}: expected one match, found {count}')
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          server = 'QtScrcpy/QtScrcpyCore/src/device/server/server.cpp'
+          replace_once(server,
+              '#include "server.h"\n',
+              '#include "server.h"\n#include "qtscrcpytelemetry.h"\n')
+
+          replace_once(server,
+              '''static quint32 bufferRead32be(quint8 *buf)
+{
+    return static_cast<quint32>((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]);
+}
+''',
+              '''static quint32 bufferRead32be(quint8 *buf)
+{
+    return static_cast<quint32>((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]);
+}
+
+static QString telemetryTail(QString text)
+{
+    constexpr int maxLength = 2048;
+    text = text.trimmed();
+    if (text.size() > maxLength) text = text.right(maxLength);
+    return text;
+}
+''')
+
+          replace_once(server,
+              '''    m_serverProcess.execute(m_params.serial, finalArgs);
+    
+    return true;
+''',
+              '''    if (qsc::telemetryEnabled()) {
+        qInfo() << "[Telemetry][Server] execute"
+                << "version=" << m_params.serverVersion
+                << "forward=" << m_tunnelForward
+                << "thread=" << qsc::telemetryThreadId();
+    }
+
+    m_serverProcess.execute(m_params.serial, finalArgs);
+    
+    return true;
+''')
+
+          replace_once(server,
+              '''    if (!controlSocket->waitForConnected(1000)) {
+        // 连接到adb很快的，这里失败不重试
+        m_connectCount = MAX_CONNECT_COUNT;
+        qWarning("control socket connect to server failed");
+        goto result;
+    }
+
+    if (QTcpSocket::ConnectedState == videoSocket->state()) {
+''',
+              '''    if (!controlSocket->waitForConnected(1000)) {
+        // 连接到adb很快的，这里失败不重试
+        m_connectCount = MAX_CONNECT_COUNT;
+        qWarning("control socket connect to server failed");
+        goto result;
+    }
+
+    // In tunnel-forward mode scrcpy-server sends one dummy byte on every
+    // socket. Consume it deterministically before exposing the control socket,
+    // otherwise the first device message may be parsed one byte off.
+    if (!controlSocket->waitForReadyRead(1000)) {
+        m_connectCount = MAX_CONNECT_COUNT;
+        qWarning("control socket dummy byte timeout");
+        goto result;
+    }
+    {
+        const QByteArray dummy = controlSocket->read(1);
+        if (dummy.size() != 1) {
+            m_connectCount = MAX_CONNECT_COUNT;
+            qWarning("control socket dummy byte missing");
+            goto result;
+        }
+        if (qsc::telemetryEnabled()) {
+            qInfo() << "[Telemetry][ControlSocket] dummy-consumed"
+                    << "value=" << static_cast<unsigned char>(dummy.at(0))
+                    << "remaining=" << controlSocket->bytesAvailable();
+        }
+    }
+
+    if (QTcpSocket::ConnectedState == videoSocket->state()) {
+''')
+
+          replace_once(server,
+              '''void Server::onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult)
+{
+    if (sender() == &m_workProcess) {
+''',
+              '''void Server::onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult)
+{
+    if (sender() == &m_serverProcess && qsc::telemetryEnabled()) {
+        qInfo() << "[Telemetry][Server] process-result"
+                << "result=" << static_cast<int>(processResult)
+                << "step=" << static_cast<int>(m_serverStartStep)
+                << "stdoutTail=" << telemetryTail(m_serverProcess.getStdOut())
+                << "stderrTail=" << telemetryTail(m_serverProcess.getErrorOut());
+    }
+
+    if (sender() == &m_workProcess) {
+''')
+
+          device = 'QtScrcpy/QtScrcpyCore/src/device/device.cpp'
+          replace_once(device,
+              '#include "recorder.h"\n#include "server.h"\n#include "demuxer.h"\n',
+              '#include "recorder.h"\n#include "server.h"\n#include "demuxer.h"\n#include "qtscrcpytelemetry.h"\n')
+
+          replace_once(device,
+              '''        m_controller = std::make_unique<Controller>(
+            [this](const QByteArray &data) -> qint64 {
+                QTcpSocket *socket = m_server ? m_server->getControlSocket() : nullptr;
+                return socket ? socket->write(data.constData(), data.size()) : 0;
+            },
+            m_params.gameScript);
+''',
+              '''        m_controller = std::make_unique<Controller>(
+            [this](const QByteArray &data) -> qint64 {
+                QTcpSocket *socket = m_server ? m_server->getControlSocket() : nullptr;
+                const int type = data.isEmpty()
+                    ? -1
+                    : static_cast<unsigned char>(data.at(0));
+                const bool trace = qsc::telemetryEnabled() &&
+                    (type == ControlMsg::CMT_INJECT_TEXT ||
+                     type == ControlMsg::CMT_GET_CLIPBOARD ||
+                     type == ControlMsg::CMT_SET_CLIPBOARD);
+
+                if (!socket) {
+                    if (trace) {
+                        qWarning() << "[Telemetry][ControlSocket] write-no-socket"
+                                   << "type=" << type
+                                   << "bytes=" << data.size();
+                    }
+                    return 0;
+                }
+
+                const qint64 written = socket->write(data.constData(), data.size());
+                if (trace) {
+                    qInfo() << "[Telemetry][ControlSocket] write"
+                            << "type=" << type
+                            << "bytes=" << data.size()
+                            << "accepted=" << written
+                            << "state=" << static_cast<int>(socket->state())
+                            << "error=" << static_cast<int>(socket->error())
+                            << "bytesToWrite=" << socket->bytesToWrite()
+                            << "socketThreadMatch="
+                            << (socket->thread() == QThread::currentThread())
+                            << "thread=" << qsc::telemetryThreadId();
+                }
+                return written;
+            },
+            m_params.gameScript);
+''')
+
+          replace_once(device,
+              '''            if (QTcpSocket *socket = m_server->getControlSocket()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+                    if (!m_controller) return;
+                    int quota = 60;
+                    while (socket->bytesAvailable() > 0 && quota-- > 0) {
+                        const QByteArray bytes = socket->peek(socket->bytesAvailable());
+                        DeviceMsg message;
+                        const qint32 consumed = message.deserialize(bytes);
+                        if (consumed <= 0) break;
+                        socket->read(consumed);
+                        m_controller->recvDeviceMsg(&message);
+                    }
+                });
+            }
+''',
+              '''            if (QTcpSocket *socket = m_server->getControlSocket()) {
+                if (qsc::telemetryEnabled()) {
+                    qInfo() << "[Telemetry][ControlSocket] installed"
+                            << "state=" << static_cast<int>(socket->state())
+                            << "available=" << socket->bytesAvailable()
+                            << "thread=" << qsc::telemetryThreadId();
+                }
+
+                connect(socket, &QTcpSocket::errorOccurred, this,
+                        [socket](QAbstractSocket::SocketError error) {
+                    if (qsc::telemetryEnabled()) {
+                        qWarning() << "[Telemetry][ControlSocket] error"
+                                   << "code=" << static_cast<int>(error)
+                                   << "state=" << static_cast<int>(socket->state())
+                                   << "message=" << socket->errorString();
+                    }
+                });
+                connect(socket, &QTcpSocket::disconnected, this, [socket]() {
+                    if (qsc::telemetryEnabled()) {
+                        qWarning() << "[Telemetry][ControlSocket] disconnected"
+                                   << "error=" << static_cast<int>(socket->error())
+                                   << "message=" << socket->errorString();
+                    }
+                });
+                connect(socket, &QTcpSocket::stateChanged, this,
+                        [](QAbstractSocket::SocketState state) {
+                    if (qsc::telemetryEnabled()) {
+                        qInfo() << "[Telemetry][ControlSocket] state"
+                                << static_cast<int>(state);
+                    }
+                });
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+                    if (!m_controller) return;
+                    if (qsc::telemetryEnabled()) {
+                        qInfo() << "[Telemetry][ControlSocket] ready-read"
+                                << "available=" << socket->bytesAvailable();
+                    }
+
+                    int quota = 60;
+                    while (socket->bytesAvailable() > 0 && quota-- > 0) {
+                        const QByteArray bytes = socket->peek(socket->bytesAvailable());
+                        DeviceMsg message;
+                        const qint32 consumed = message.deserialize(bytes);
+                        if (qsc::telemetryEnabled()) {
+                            qInfo() << "[Telemetry][ControlSocket] parse"
+                                    << "available=" << bytes.size()
+                                    << "consumed=" << consumed
+                                    << "header=" << bytes.left(8).toHex();
+                        }
+                        if (consumed <= 0) break;
+                        socket->read(consumed);
+                        m_controller->recvDeviceMsg(&message);
+                    }
+                });
+            }
+''')
+
+          replace_once(device,
+              '''        connect(m_server.get(), &Server::serverStoped, this, [this]() {
+            disconnectDevice();
+            qDebug() << "server process stop";
+        });
+''',
+              '''        connect(m_server.get(), &Server::serverStoped, this, [this]() {
+            if (qsc::telemetryEnabled()) {
+                qWarning() << "[Telemetry][Device] disconnect-reason=server-process-stop"
+                           << "serial=" << m_params.serial;
+            }
+            disconnectDevice();
+            qDebug() << "server process stop";
+        });
+''')
+
+          replace_once(device,
+              '''        connect(m_stream.get(), &Demuxer::onStreamStop, this, [this]() {
+            disconnectDevice();
+            qDebug() << "stream thread stop";
+        });
+''',
+              '''        connect(m_stream.get(), &Demuxer::onStreamStop, this, [this]() {
+            if (qsc::telemetryEnabled()) {
+                qWarning() << "[Telemetry][Device] disconnect-reason=video-stream-stop"
+                           << "serial=" << m_params.serial;
+            }
+            disconnectDevice();
+            qDebug() << "stream thread stop";
+        });
+''')
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add QtScrcpy/QtScrcpyCore/src/device/server/server.cpp QtScrcpy/QtScrcpyCore/src/device/device.cpp
+          git commit -m 'feat(telemetry): trace control socket and server shutdown'
+          git push origin HEAD:clipboard-hardening

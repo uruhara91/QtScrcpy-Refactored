@@ -1,6 +1,7 @@
 ﻿#ifndef DIALOG_H
 #define DIALOG_H
 
+#include <QComboBox>
 #include <QWidget>
 #include <QPointer>
 #include <QMessageBox>
@@ -56,7 +57,16 @@ private slots:
     void on_connectedPhoneList_itemDoubleClicked(QListWidgetItem *item);
     void on_updateNameBtn_clicked();
     void on_useSingleModeCheck_clicked();
-    void on_serialBox_currentIndexChanged(const QString &arg1);
+
+    // Qt 6 auto-connects QComboBox::currentIndexChanged(int). Forward it to
+    // the existing text-based implementation without changing behavior.
+    void on_serialBox_currentIndexChanged(int index)
+    {
+        Q_UNUSED(index);
+        auto *serialBox = findChild<QComboBox *>(QStringLiteral("serialBox"));
+        on_serialBox_currentIndexChanged(
+            serialBox ? serialBox->currentText() : QString());
+    }
 
     void on_startAudioBtn_clicked();
     void on_stopAudioBtn_clicked();
@@ -66,6 +76,10 @@ private slots:
     void showIpEditMenu(const QPoint &pos);
 
 private:
+    // Keep the implementation already defined in dialog.cpp, but do not expose
+    // it as a Qt slot because Qt 6 has no matching QString signal overload.
+    void on_serialBox_currentIndexChanged(const QString &arg1);
+
     bool checkAdbRun();
     void initUI();
     void updateBootConfig(bool toView = true);

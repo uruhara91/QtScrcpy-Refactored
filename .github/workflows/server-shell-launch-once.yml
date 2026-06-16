@@ -1,0 +1,105 @@
+name: Use shell server launch by default
+on:
+  push:
+    branches: [clipboard-hardening]
+    paths: [.github/workflows/server-shell-launch-once.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: clipboard-hardening
+      - shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('QtScrcpy/QtScrcpyCore/src/device/server/server.cpp')
+          text = path.read_text(encoding='utf-8-sig')
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '#include "server.h"\n',
+              '#include "server.h"\n#include "qtscrcpytelemetry.h"\n')
+
+          replace_once(
+              '''    if (!m_params.logLevel.isEmpty()) {
+        args << QString("log_level=%1").arg(m_params.logLevel);
+    }
+''',
+              '''    const QString serverLogLevel = qsc::telemetryEnabled()
+        ? QStringLiteral("debug")
+        : m_params.logLevel;
+    if (!serverLogLevel.isEmpty()) {
+        args << QString("log_level=%1").arg(serverLogLevel);
+    }
+''')
+
+          replace_once(
+              '''    QString hybridCmd = QString("su -c '%1' || %1").arg(cmdObj);
+
+    QStringList finalArgs;
+    finalArgs << "shell";
+    finalArgs << hybridCmd;
+
+    m_serverProcess.execute(m_params.serial, finalArgs);
+''',
+              '''    // scrcpy-server is designed to run as Android's shell UID. Running it as
+    // root first may break framework service attribution, notably ClipboardManager
+    // on recent Android versions. Keep root launch as an explicit diagnostic opt-in.
+    const bool useRoot =
+        qEnvironmentVariableIntValue("QTSCRCPY_SERVER_ROOT") > 0;
+    const QString serverCommand = useRoot
+        ? QString("su -c '%1'").arg(cmdObj)
+        : cmdObj;
+
+    if (qsc::telemetryEnabled()) {
+        qInfo() << "[Telemetry][Server] launch"
+                << "uidMode=" << (useRoot ? "root" : "shell")
+                << "logLevel=" << serverLogLevel
+                << "thread=" << qsc::telemetryThreadId();
+    }
+
+    QStringList finalArgs;
+    finalArgs << "shell";
+    finalArgs << serverCommand;
+
+    m_serverProcess.execute(m_params.serial, finalArgs);
+''')
+
+          replace_once(
+              '''void Server::onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult)
+{
+    if (sender() == &m_workProcess) {
+''',
+              '''void Server::onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult)
+{
+    if (sender() == &m_serverProcess &&
+        qsc::telemetryEnabled() &&
+        processResult != qsc::AdbProcess::AER_SUCCESS_START) {
+        qWarning() << "[Telemetry][Server] process-result"
+                   << "result=" << static_cast<int>(processResult)
+                   << "step=" << static_cast<int>(m_serverStartStep)
+                   << "stdoutTail=" << m_serverProcess.getStdOut().right(4096).trimmed()
+                   << "stderrTail=" << m_serverProcess.getErrorOut().right(4096).trimmed();
+    }
+
+    if (sender() == &m_workProcess) {
+''')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add QtScrcpy/QtScrcpyCore/src/device/server/server.cpp
+          git commit -m 'fix(server): launch scrcpy as shell by default'
+          git push origin HEAD:clipboard-hardening

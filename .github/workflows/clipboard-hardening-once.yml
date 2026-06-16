@@ -1,0 +1,249 @@
+name: Clipboard hardening
+on:
+  push:
+    branches: [clipboard-hardening]
+    paths: [.github/workflows/clipboard-hardening-once.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: clipboard-hardening
+      - shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text(encoding='utf-8-sig')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}')
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          controller = Path('QtScrcpy/QtScrcpyCore/src/device/controller/controller.cpp')
+          replace_once(
+              controller,
+              'void Controller::copy() { postKeyCodeClick(AKEYCODE_COPY); }\n'
+              'void Controller::cut() { postKeyCodeClick(AKEYCODE_CUT); }',
+              'void Controller::copy() { getDeviceClipboard(false); }\n'
+              'void Controller::cut() { getDeviceClipboard(true); }')
+
+          header = Path('QtScrcpy/QtScrcpyCore/src/device/controller/inputconvert/controlmsg.h')
+          text = header.read_text(encoding='utf-8-sig')
+          old = '''            struct
+            {
+                char *text = Q_NULLPTR;
+            } injectText;'''
+          new = '''            struct
+            {
+                char *text = Q_NULLPTR;
+                quint32 length = 0;
+            } injectText;'''
+          if text.count(old) != 1:
+              raise SystemExit('controlmsg.h: injectText layout mismatch')
+          text = text.replace(old, new, 1)
+          old = '''            struct
+            {
+                uint64_t sequence = 0;
+                char *text = Q_NULLPTR;
+                bool paste = true;
+            } setClipboard;'''
+          new = '''            struct
+            {
+                uint64_t sequence = 0;
+                char *text = Q_NULLPTR;
+                quint32 length = 0;
+                bool paste = true;
+            } setClipboard;'''
+          if text.count(old) != 1:
+              raise SystemExit('controlmsg.h: setClipboard layout mismatch')
+          header.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          source = Path('QtScrcpy/QtScrcpyCore/src/device/controller/inputconvert/controlmsg.cpp')
+          text = source.read_text(encoding='utf-8-sig')
+
+          marker = '''inline qint16 floatToI16fp(float value) noexcept
+{
+    value = std::clamp(value, -1.0f, 1.0f);
+    qint32 converted = static_cast<qint32>(value * 0x1p15f);
+    if (converted >= 0x7fff) converted = 0x7fff;
+    return static_cast<qint16>(converted);
+}
+'''
+          helper = marker + '''
+QByteArray truncateUtf8(const QString &text, int maxBytes)
+{
+    QByteArray utf8 = text.toUtf8();
+    if (utf8.size() <= maxBytes) return utf8;
+
+    int cut = maxBytes;
+    while (cut > 0 &&
+           (static_cast<unsigned char>(utf8.at(cut)) & 0xc0u) == 0x80u) {
+        --cut;
+    }
+    utf8.truncate(cut);
+    return utf8;
+}
+'''
+          if text.count(marker) != 1:
+              raise SystemExit('controlmsg.cpp: helper insertion mismatch')
+          text = text.replace(marker, helper, 1)
+
+          old = '''ControlMsg::ControlMsg(ControlMsgType controlMsgType)
+    : QScrcpyEvent(Control)
+{
+    m_data.type = controlMsgType;
+}
+'''
+          new = '''ControlMsg::ControlMsg(ControlMsgType controlMsgType)
+    : QScrcpyEvent(Control)
+{
+    m_data.type = controlMsgType;
+    if (controlMsgType == CMT_INJECT_TEXT) {
+        m_data.injectText.text = nullptr;
+        m_data.injectText.length = 0;
+    } else if (controlMsgType == CMT_SET_CLIPBOARD) {
+        m_data.setClipboard.sequence = 0;
+        m_data.setClipboard.text = nullptr;
+        m_data.setClipboard.length = 0;
+        m_data.setClipboard.paste = true;
+    }
+}
+'''
+          if text.count(old) != 1:
+              raise SystemExit('controlmsg.cpp: constructor mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''void ControlMsg::setInjectTextMsgData(const QString &text)
+{
+    const QByteArray utf8 = text.left(CONTROL_MSG_INJECT_TEXT_MAX_LENGTH).toUtf8();
+    m_data.injectText.text = new char[utf8.size() + 1];
+    std::memcpy(m_data.injectText.text, utf8.constData(), static_cast<std::size_t>(utf8.size()));
+    m_data.injectText.text[utf8.size()] = '\\0';
+}
+'''
+          new = '''void ControlMsg::setInjectTextMsgData(const QString &text)
+{
+    delete[] m_data.injectText.text;
+    m_data.injectText.text = nullptr;
+    m_data.injectText.length = 0;
+
+    const QByteArray utf8 = truncateUtf8(text, CONTROL_MSG_INJECT_TEXT_MAX_LENGTH);
+    if (utf8.isEmpty()) return;
+
+    m_data.injectText.length = static_cast<quint32>(utf8.size());
+    m_data.injectText.text = new char[utf8.size()];
+    std::memcpy(m_data.injectText.text, utf8.constData(),
+                static_cast<std::size_t>(utf8.size()));
+}
+'''
+          if text.count(old) != 1:
+              raise SystemExit('controlmsg.cpp: inject text setter mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''void ControlMsg::setSetClipboardMsgData(const QString &text, bool paste)
+{
+    m_data.setClipboard.paste = paste;
+    m_data.setClipboard.sequence = 0;
+
+    if (text.isEmpty()) {
+        m_data.setClipboard.text = nullptr;
+        return;
+    }
+
+    const QByteArray utf8 = text.left(CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH).toUtf8();
+    m_data.setClipboard.text = new char[utf8.size() + 1];
+    std::memcpy(m_data.setClipboard.text, utf8.constData(), static_cast<std::size_t>(utf8.size()));
+    m_data.setClipboard.text[utf8.size()] = '\\0';
+}
+'''
+          new = '''void ControlMsg::setSetClipboardMsgData(const QString &text, bool paste)
+{
+    delete[] m_data.setClipboard.text;
+    m_data.setClipboard.text = nullptr;
+    m_data.setClipboard.length = 0;
+    m_data.setClipboard.paste = paste;
+    m_data.setClipboard.sequence = 0;
+
+    const QByteArray utf8 = truncateUtf8(text, CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH);
+    if (utf8.isEmpty()) return;
+
+    m_data.setClipboard.length = static_cast<quint32>(utf8.size());
+    m_data.setClipboard.text = new char[utf8.size()];
+    std::memcpy(m_data.setClipboard.text, utf8.constData(),
+                static_cast<std::size_t>(utf8.size()));
+}
+'''
+          if text.count(old) != 1:
+              raise SystemExit('controlmsg.cpp: clipboard setter mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''    if (m_data.type == CMT_INJECT_TEXT) {
+        const char *text = m_data.injectText.text ? m_data.injectText.text : "";
+        const int length = static_cast<int>(std::strlen(text));
+        result.resize(5 + length);
+        char *cursor = result.data();
+        *cursor++ = static_cast<char>(m_data.type);
+        write32(cursor, static_cast<quint32>(length));
+        std::memcpy(cursor, text, static_cast<std::size_t>(length));
+        return result;
+    }
+'''
+          new = '''    if (m_data.type == CMT_INJECT_TEXT) {
+        const int length = static_cast<int>(m_data.injectText.length);
+        result.resize(5 + length);
+        char *cursor = result.data();
+        *cursor++ = static_cast<char>(m_data.type);
+        write32(cursor, m_data.injectText.length);
+        if (length > 0) {
+            std::memcpy(cursor, m_data.injectText.text,
+                        static_cast<std::size_t>(length));
+        }
+        return result;
+    }
+'''
+          if text.count(old) != 1:
+              raise SystemExit('controlmsg.cpp: inject serialization mismatch')
+          text = text.replace(old, new, 1)
+
+          old = '''    if (m_data.type == CMT_SET_CLIPBOARD) {
+        const char *text = m_data.setClipboard.text ? m_data.setClipboard.text : "";
+        const int length = static_cast<int>(std::strlen(text));
+        result.resize(14 + length);
+        char *cursor = result.data();
+        *cursor++ = static_cast<char>(m_data.type);
+        write64(cursor, m_data.setClipboard.sequence);
+        *cursor++ = static_cast<char>(m_data.setClipboard.paste);
+        write32(cursor, static_cast<quint32>(length));
+        std::memcpy(cursor, text, static_cast<std::size_t>(length));
+        return result;
+    }
+'''
+          new = '''    if (m_data.type == CMT_SET_CLIPBOARD) {
+        const int length = static_cast<int>(m_data.setClipboard.length);
+        result.resize(14 + length);
+        char *cursor = result.data();
+        *cursor++ = static_cast<char>(m_data.type);
+        write64(cursor, m_data.setClipboard.sequence);
+        *cursor++ = static_cast<char>(m_data.setClipboard.paste);
+        write32(cursor, m_data.setClipboard.length);
+        if (length > 0) {
+            std::memcpy(cursor, m_data.setClipboard.text,
+                        static_cast<std::size_t>(length));
+        }
+        return result;
+    }
+'''
+          if text.count(old) != 1:
+              raise SystemExit('controlmsg.cpp: clipboard serialization mismatch')
+          source.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add QtScrcpy/QtScrcpyCore/src/device/controller/controller.cpp QtScrcpy/QtScrcpyCore/src/device/controller/inputconvert/controlmsg.h QtScrcpy/QtScrcpyCore/src/device/controller/inputconvert/controlmsg.cpp
+          git commit -m 'fix(clipboard): use protocol commands and byte-safe UTF-8 payloads'
+          git push origin HEAD:clipboard-hardening

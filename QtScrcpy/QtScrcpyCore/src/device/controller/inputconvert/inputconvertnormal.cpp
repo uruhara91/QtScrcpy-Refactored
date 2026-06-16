@@ -48,7 +48,7 @@ void InputConvertNormal::mouseEvent(const QMouseEvent *from, const QSize &frameS
         convertMouseButtons(from->buttons()),
         QRect(pos.toPoint(), frameSize),
         AMOTION_EVENT_ACTION_DOWN == action ? 1.0f : 0.0f);
-    (void)m_controller->sendControl(controlMsg.serializeData());
+    (void)m_controller->sendControl(controlMsg);
 }
 
 void InputConvertNormal::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
@@ -75,7 +75,7 @@ void InputConvertNormal::wheelEvent(const QWheelEvent *from, const QSize &frameS
         hScroll,
         vScroll,
         convertMouseButtons(from->buttons()));
-    (void)m_controller->sendControl(controlMsg.serializeData());
+    (void)m_controller->sendControl(controlMsg);
 }
 
 void InputConvertNormal::keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize)
@@ -115,7 +115,7 @@ void InputConvertNormal::keyEvent(const QKeyEvent *from, const QSize &frameSize,
         keyCode,
         m_repeat,
         convertMetastate(from->modifiers()));
-    (void)m_controller->sendControl(controlMsg.serializeData());
+    (void)m_controller->sendControl(controlMsg);
 }
 
 AndroidMotioneventButtons InputConvertNormal::convertMouseButtons(Qt::MouseButtons buttonState)

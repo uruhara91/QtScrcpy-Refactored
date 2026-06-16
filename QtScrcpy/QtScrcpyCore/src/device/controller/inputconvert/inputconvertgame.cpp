@@ -230,7 +230,7 @@ bool InputConvertGame::sendTouchEvent(int id,
         QRect(absolutePos, m_frameSize),
         action == AMOTION_EVENT_ACTION_DOWN ? 1.0f : 0.0f);
 
-    if (!m_controller->sendControl(controlMsg.serializeData())) return false;
+    if (!m_controller->sendControl(controlMsg)) return false;
 
     m_touchPositions[id] = safePos;
     m_lastAbsolutePositions[id] = absolutePos;
@@ -245,7 +245,7 @@ void InputConvertGame::sendKeyEvent(AndroidKeyeventAction action,
 
     ControlMsg controlMsg(ControlMsg::CMT_INJECT_KEYCODE);
     controlMsg.setInjectKeycodeMsgData(action, keyCode, 0, AMETA_NONE);
-    m_controller->sendControl(controlMsg.serializeData());
+    (void)m_controller->sendControl(controlMsg);
 }
 
 QPointF InputConvertGame::clampRelativePos(const QPointF &pos) const

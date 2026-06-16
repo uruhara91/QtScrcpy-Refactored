@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QClipboard>
+#include <QDebug>
 #include <QMetaObject>
 #include <QThread>
 #include <array>
@@ -9,8 +10,26 @@
 #include "controller.h"
 #include "controlmsg.h"
 #include "inputconvertgame.h"
+#include "qtscrcpytelemetry.h"
 #include "receiver.h"
 #include "videosocket.h"
+
+namespace {
+
+[[nodiscard]] bool isClipboardControlType(ControlMsg::ControlMsgType type) noexcept
+{
+    return type == ControlMsg::CMT_INJECT_TEXT ||
+           type == ControlMsg::CMT_GET_CLIPBOARD ||
+           type == ControlMsg::CMT_SET_CLIPBOARD;
+}
+
+[[nodiscard]] bool isGuiThread() noexcept
+{
+    const QCoreApplication *app = QCoreApplication::instance();
+    return app && QThread::currentThread() == app->thread();
+}
+
+} // namespace
 
 Controller::Controller(std::function<qint64(const QByteArray&)> sendData,
                        QString gameScript,
@@ -155,8 +174,26 @@ void Controller::postAppSwitch() { postKeyCodeClick(AKEYCODE_APP_SWITCH); }
 void Controller::postPower() { postKeyCodeClick(AKEYCODE_POWER); }
 void Controller::postVolumeUp() { postKeyCodeClick(AKEYCODE_VOLUME_UP); }
 void Controller::postVolumeDown() { postKeyCodeClick(AKEYCODE_VOLUME_DOWN); }
-void Controller::copy() { getDeviceClipboard(false); }
-void Controller::cut() { getDeviceClipboard(true); }
+
+void Controller::copy()
+{
+    if (qsc::telemetryEnabled()) {
+        qInfo() << "[Telemetry][Clipboard] action=copy"
+                << "thread=" << qsc::telemetryThreadId()
+                << "guiThread=" << isGuiThread();
+    }
+    getDeviceClipboard(false);
+}
+
+void Controller::cut()
+{
+    if (qsc::telemetryEnabled()) {
+        qInfo() << "[Telemetry][Clipboard] action=cut"
+                << "thread=" << qsc::telemetryThreadId()
+                << "guiThread=" << isGuiThread();
+    }
+    getDeviceClipboard(true);
+}
 
 void Controller::expandNotificationPanel()
 {
@@ -187,6 +224,14 @@ void Controller::getDeviceClipboard(bool cut)
 void Controller::setDeviceClipboard(bool pause)
 {
     const QString text = QApplication::clipboard()->text();
+    if (qsc::telemetryEnabled()) {
+        qInfo() << "[Telemetry][Clipboard] action=set"
+                << "paste=" << pause
+                << "utf8Bytes=" << text.toUtf8().size()
+                << "thread=" << qsc::telemetryThreadId()
+                << "guiThread=" << isGuiThread();
+    }
+
     ControlMsg controlMsg(ControlMsg::CMT_SET_CLIPBOARD);
     controlMsg.setSetClipboardMsgData(text, pause);
     (void)sendControl(controlMsg);
@@ -195,6 +240,12 @@ void Controller::setDeviceClipboard(bool pause)
 void Controller::clipboardPaste()
 {
     QString text = QApplication::clipboard()->text();
+    if (qsc::telemetryEnabled()) {
+        qInfo() << "[Telemetry][Clipboard] action=legacy-inject-text"
+                << "utf8Bytes=" << text.toUtf8().size()
+                << "thread=" << qsc::telemetryThreadId()
+                << "guiThread=" << isGuiThread();
+    }
     postTextInput(text);
 }
 
@@ -249,9 +300,25 @@ bool Controller::sendControl(const ControlMsg &message)
     std::array<char, ControlMsg::INLINE_SERIALIZED_CAPACITY> inlineBuffer{};
     const int size = message.serializeTo(std::span<char>(inlineBuffer));
     if (size > 0) {
+        if (qsc::telemetryEnabled() && isClipboardControlType(message.type())) {
+            qInfo() << "[Telemetry][Control] serialize"
+                    << "type=" << static_cast<int>(message.type())
+                    << "bytes=" << size
+                    << "path=inline"
+                    << "thread=" << qsc::telemetryThreadId();
+        }
         return sendControlBytes(inlineBuffer.data(), size);
     }
-    return sendControl(message.serializeData());
+
+    const QByteArray serialized = message.serializeData();
+    if (qsc::telemetryEnabled() && isClipboardControlType(message.type())) {
+        qInfo() << "[Telemetry][Control] serialize"
+                << "type=" << static_cast<int>(message.type())
+                << "bytes=" << serialized.size()
+                << "path=dynamic"
+                << "thread=" << qsc::telemetryThreadId();
+    }
+    return sendControl(serialized);
 }
 
 bool Controller::sendControl(const QByteArray &buffer)

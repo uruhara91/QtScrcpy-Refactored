@@ -347,7 +347,7 @@ bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName, QSize &size
     QElapsedTimer timer;
     timer.start();
     unsigned char buf[DEVICE_NAME_FIELD_LENGTH + 12];
-    while (videoSocket->bytesAvailable() <= (DEVICE_NAME_FIELD_LENGTH + 12)) {
+    while (videoSocket->bytesAvailable() < (DEVICE_NAME_FIELD_LENGTH + 12)) {
         videoSocket->waitForReadyRead(300);
         if (timer.elapsed() > 3000) {
             qInfo("readInfo timeout");

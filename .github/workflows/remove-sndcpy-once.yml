@@ -1,0 +1,51 @@
+name: Remove obsolete sndcpy UI
+on:
+  push:
+    branches: [hardening-pass-1]
+    paths: [.github/workflows/remove-sndcpy-once.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hardening-pass-1
+      - shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          replacements = {
+            'QtScrcpy/ui/dialog.h': [('    void on_installSndcpyBtn_clicked();\n', '')],
+            'QtScrcpy/audio/audiooutput.h': [('    // Retained for source/UI compatibility. Native scrcpy audio needs no APK.\n    bool install(const QString &serial);\n\n', '')],
+            'QtScrcpy/audio/audiooutput.cpp': [('bool AudioOutput::install(const QString &serial)\n{\n    Q_UNUSED(serial)\n    return true;\n}\n\n', '')],
+          }
+          for name, pairs in replacements.items():
+            path = Path(name)
+            text = path.read_text(encoding='utf-8-sig')
+            for old, new in pairs:
+              if text.count(old) != 1:
+                raise SystemExit(f'{name}: unexpected match count')
+              text = text.replace(old, new, 1)
+            path.write_text(text, encoding='utf-8')
+
+          path = Path('QtScrcpy/ui/dialog.cpp')
+          text = path.read_text(encoding='utf-8-sig')
+          begin = text.index('void Dialog::on_installSndcpyBtn_clicked()')
+          end = text.index('void Dialog::on_autoUpdatecheckBox_toggled', begin)
+          path.write_text(text[:begin] + text[end:], encoding='utf-8')
+
+          path = Path('QtScrcpy/ui/dialog.ui')
+          text = path.read_text(encoding='utf-8')
+          marker = '<widget class="QPushButton" name="installSndcpyBtn">'
+          pos = text.index(marker)
+          start = text.rfind('            <item>\n', 0, pos)
+          end = text.index('            </item>\n', pos) + len('            </item>\n')
+          path.write_text(text[:start] + text[end:], encoding='utf-8')
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add QtScrcpy/ui/dialog.h QtScrcpy/ui/dialog.cpp QtScrcpy/ui/dialog.ui QtScrcpy/audio/audiooutput.h QtScrcpy/audio/audiooutput.cpp
+          git commit -m 'cleanup(audio): remove obsolete sndcpy installation UI'
+          git push origin HEAD:hardening-pass-1

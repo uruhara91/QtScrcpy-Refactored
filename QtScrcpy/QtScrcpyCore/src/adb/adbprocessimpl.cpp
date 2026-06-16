@@ -10,6 +10,61 @@
 #endif
 
 #include "adbprocessimpl.h"
+#include "qtscrcpytelemetry.h"
+
+namespace {
+
+[[nodiscard]] bool isScrcpyServerCommand(const QStringList &args) noexcept
+{
+    return args.size() >= 2 &&
+           args.constFirst() == QStringLiteral("shell") &&
+           args.at(1).contains(QStringLiteral("com.genymobile.scrcpy.Server"));
+}
+
+[[nodiscard]] QString normalizeScrcpyServerCommand(QString command)
+{
+    const bool useRoot =
+        qEnvironmentVariableIntValue("QTSCRCPY_SERVER_ROOT") > 0;
+
+    if (!useRoot) {
+        // Legacy QtScrcpy builds launch root first and fall back to shell:
+        //   su -c '<server command>' || <server command>
+        // scrcpy-server is designed to run as Android's shell UID. Select the
+        // shell half deterministically so framework services (notably the
+        // clipboard service) see the expected caller identity.
+        const QString separator = QStringLiteral("' || ");
+        const int fallbackPos = command.indexOf(separator);
+        if (command.startsWith(QStringLiteral("su -c '")) && fallbackPos >= 0) {
+            command = command.mid(fallbackPos + separator.size());
+        } else if (command.startsWith(QStringLiteral("su -c '")) &&
+                   command.endsWith(QLatin1Char('\'')) &&
+                   command.size() > 8) {
+            command = command.mid(7, command.size() - 8);
+        }
+    }
+
+    if (qsc::telemetryEnabled()) {
+        static const char *const levels[] = {
+            "verbose", "debug", "info", "warn", "error"
+        };
+        for (const char *level : levels) {
+            const QString token = QStringLiteral("log_level=") +
+                                  QString::fromLatin1(level);
+            if (command.contains(token)) {
+                command.replace(token, QStringLiteral("log_level=debug"));
+                break;
+            }
+        }
+
+        qInfo() << "[Telemetry][Server] normalized-launch"
+                << "uidMode=" << (useRoot ? "root" : "shell")
+                << "debugLog=true";
+    }
+
+    return command;
+}
+
+} // namespace
 
 QString AdbProcessImpl::s_adbPath = "";
 extern QString g_adbPath;
@@ -97,13 +152,18 @@ void AdbProcessImpl::initSignals()
 
 void AdbProcessImpl::execute(const QString &serial, const QStringList &args)
 {
+    QStringList normalizedArgs = args;
+    if (isScrcpyServerCommand(normalizedArgs)) {
+        normalizedArgs[1] = normalizeScrcpyServerCommand(normalizedArgs.at(1));
+    }
+
     QStringList adbArgs;
-    adbArgs.reserve(args.size() + 2);
+    adbArgs.reserve(normalizedArgs.size() + 2);
     
     if (!serial.isEmpty()) {
         adbArgs << QStringLiteral("-s") << serial;
     }
-    adbArgs.append(args);
+    adbArgs.append(normalizedArgs);
 
     if (s_adbPath.isEmpty()) getAdbPath();
     

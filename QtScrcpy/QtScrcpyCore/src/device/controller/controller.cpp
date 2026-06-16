@@ -155,8 +155,8 @@ void Controller::postAppSwitch() { postKeyCodeClick(AKEYCODE_APP_SWITCH); }
 void Controller::postPower() { postKeyCodeClick(AKEYCODE_POWER); }
 void Controller::postVolumeUp() { postKeyCodeClick(AKEYCODE_VOLUME_UP); }
 void Controller::postVolumeDown() { postKeyCodeClick(AKEYCODE_VOLUME_DOWN); }
-void Controller::copy() { postKeyCodeClick(AKEYCODE_COPY); }
-void Controller::cut() { postKeyCodeClick(AKEYCODE_CUT); }
+void Controller::copy() { getDeviceClipboard(false); }
+void Controller::cut() { getDeviceClipboard(true); }
 
 void Controller::expandNotificationPanel()
 {

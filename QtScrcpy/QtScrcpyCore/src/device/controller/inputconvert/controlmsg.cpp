@@ -51,12 +51,35 @@ inline qint16 floatToI16fp(float value) noexcept
     return static_cast<qint16>(converted);
 }
 
+QByteArray truncateUtf8(const QString &text, int maxBytes)
+{
+    QByteArray utf8 = text.toUtf8();
+    if (utf8.size() <= maxBytes) return utf8;
+
+    int cut = maxBytes;
+    while (cut > 0 &&
+           (static_cast<unsigned char>(utf8.at(cut)) & 0xc0u) == 0x80u) {
+        --cut;
+    }
+    utf8.truncate(cut);
+    return utf8;
+}
+
 } // namespace
 
 ControlMsg::ControlMsg(ControlMsgType controlMsgType)
     : QScrcpyEvent(Control)
 {
     m_data.type = controlMsgType;
+    if (controlMsgType == CMT_INJECT_TEXT) {
+        m_data.injectText.text = nullptr;
+        m_data.injectText.length = 0;
+    } else if (controlMsgType == CMT_SET_CLIPBOARD) {
+        m_data.setClipboard.sequence = 0;
+        m_data.setClipboard.text = nullptr;
+        m_data.setClipboard.length = 0;
+        m_data.setClipboard.paste = true;
+    }
 }
 
 ControlMsg::~ControlMsg()
@@ -83,10 +106,17 @@ void ControlMsg::setInjectKeycodeMsgData(AndroidKeyeventAction action,
 
 void ControlMsg::setInjectTextMsgData(const QString &text)
 {
-    const QByteArray utf8 = text.left(CONTROL_MSG_INJECT_TEXT_MAX_LENGTH).toUtf8();
-    m_data.injectText.text = new char[utf8.size() + 1];
-    std::memcpy(m_data.injectText.text, utf8.constData(), static_cast<std::size_t>(utf8.size()));
-    m_data.injectText.text[utf8.size()] = '\0';
+    delete[] m_data.injectText.text;
+    m_data.injectText.text = nullptr;
+    m_data.injectText.length = 0;
+
+    const QByteArray utf8 = truncateUtf8(text, CONTROL_MSG_INJECT_TEXT_MAX_LENGTH);
+    if (utf8.isEmpty()) return;
+
+    m_data.injectText.length = static_cast<quint32>(utf8.size());
+    m_data.injectText.text = new char[utf8.size()];
+    std::memcpy(m_data.injectText.text, utf8.constData(),
+                static_cast<std::size_t>(utf8.size()));
 }
 
 void ControlMsg::setInjectTouchMsgData(
@@ -123,18 +153,19 @@ void ControlMsg::setGetClipboardMsgData(ControlMsg::GetClipboardCopyKey copyKey)
 
 void ControlMsg::setSetClipboardMsgData(const QString &text, bool paste)
 {
+    delete[] m_data.setClipboard.text;
+    m_data.setClipboard.text = nullptr;
+    m_data.setClipboard.length = 0;
     m_data.setClipboard.paste = paste;
     m_data.setClipboard.sequence = 0;
 
-    if (text.isEmpty()) {
-        m_data.setClipboard.text = nullptr;
-        return;
-    }
+    const QByteArray utf8 = truncateUtf8(text, CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH);
+    if (utf8.isEmpty()) return;
 
-    const QByteArray utf8 = text.left(CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH).toUtf8();
-    m_data.setClipboard.text = new char[utf8.size() + 1];
-    std::memcpy(m_data.setClipboard.text, utf8.constData(), static_cast<std::size_t>(utf8.size()));
-    m_data.setClipboard.text[utf8.size()] = '\0';
+    m_data.setClipboard.length = static_cast<quint32>(utf8.size());
+    m_data.setClipboard.text = new char[utf8.size()];
+    std::memcpy(m_data.setClipboard.text, utf8.constData(),
+                static_cast<std::size_t>(utf8.size()));
 }
 
 void ControlMsg::setDisplayPowerData(bool on)
@@ -228,26 +259,30 @@ QByteArray ControlMsg::serializeData() const
     }
 
     if (m_data.type == CMT_INJECT_TEXT) {
-        const char *text = m_data.injectText.text ? m_data.injectText.text : "";
-        const int length = static_cast<int>(std::strlen(text));
+        const int length = static_cast<int>(m_data.injectText.length);
         result.resize(5 + length);
         char *cursor = result.data();
         *cursor++ = static_cast<char>(m_data.type);
-        write32(cursor, static_cast<quint32>(length));
-        std::memcpy(cursor, text, static_cast<std::size_t>(length));
+        write32(cursor, m_data.injectText.length);
+        if (length > 0) {
+            std::memcpy(cursor, m_data.injectText.text,
+                        static_cast<std::size_t>(length));
+        }
         return result;
     }
 
     if (m_data.type == CMT_SET_CLIPBOARD) {
-        const char *text = m_data.setClipboard.text ? m_data.setClipboard.text : "";
-        const int length = static_cast<int>(std::strlen(text));
+        const int length = static_cast<int>(m_data.setClipboard.length);
         result.resize(14 + length);
         char *cursor = result.data();
         *cursor++ = static_cast<char>(m_data.type);
         write64(cursor, m_data.setClipboard.sequence);
         *cursor++ = static_cast<char>(m_data.setClipboard.paste);
-        write32(cursor, static_cast<quint32>(length));
-        std::memcpy(cursor, text, static_cast<std::size_t>(length));
+        write32(cursor, m_data.setClipboard.length);
+        if (length > 0) {
+            std::memcpy(cursor, m_data.setClipboard.text,
+                        static_cast<std::size_t>(length));
+        }
         return result;
     }
 

@@ -52,6 +52,8 @@ public:
     explicit ControlMsg(ControlMsgType controlMsgType);
     ~ControlMsg() override;
 
+    [[nodiscard]] ControlMsgType type() const noexcept { return m_data.type; }
+
     void setInjectKeycodeMsgData(AndroidKeyeventAction action,
                                  AndroidKeycode keycode,
                                  quint32 repeat,

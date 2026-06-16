@@ -2,6 +2,7 @@
 #include <QClipboard>
 #include <QDebug>
 #include <QMetaObject>
+#include <QPointer>
 #include <QThread>
 #include <array>
 #include <span>
@@ -223,13 +224,37 @@ void Controller::getDeviceClipboard(bool cut)
 
 void Controller::setDeviceClipboard(bool pause)
 {
-    const QString text = QApplication::clipboard()->text();
+    if (!isGuiThread()) {
+        QCoreApplication *app = QCoreApplication::instance();
+        if (qsc::telemetryEnabled()) {
+            qInfo() << "[Telemetry][Clipboard] action=set-dispatch-to-gui"
+                    << "paste=" << pause
+                    << "thread=" << qsc::telemetryThreadId();
+        }
+        if (app) {
+            const QPointer<Controller> self(this);
+            QMetaObject::invokeMethod(app, [self, pause]() {
+                if (self) self->setDeviceClipboard(pause);
+            }, Qt::QueuedConnection);
+        }
+        return;
+    }
+
+    QClipboard *clipboard = QApplication::clipboard();
+    if (!clipboard) {
+        if (qsc::telemetryEnabled()) {
+            qWarning() << "[Telemetry][Clipboard] host-clipboard-unavailable-before-set";
+        }
+        return;
+    }
+
+    const QString text = clipboard->text();
     if (qsc::telemetryEnabled()) {
         qInfo() << "[Telemetry][Clipboard] action=set"
                 << "paste=" << pause
                 << "utf8Bytes=" << text.toUtf8().size()
                 << "thread=" << qsc::telemetryThreadId()
-                << "guiThread=" << isGuiThread();
+                << "guiThread=true";
     }
 
     ControlMsg controlMsg(ControlMsg::CMT_SET_CLIPBOARD);
@@ -239,12 +264,35 @@ void Controller::setDeviceClipboard(bool pause)
 
 void Controller::clipboardPaste()
 {
-    QString text = QApplication::clipboard()->text();
+    if (!isGuiThread()) {
+        QCoreApplication *app = QCoreApplication::instance();
+        if (qsc::telemetryEnabled()) {
+            qInfo() << "[Telemetry][Clipboard] action=legacy-dispatch-to-gui"
+                    << "thread=" << qsc::telemetryThreadId();
+        }
+        if (app) {
+            const QPointer<Controller> self(this);
+            QMetaObject::invokeMethod(app, [self]() {
+                if (self) self->clipboardPaste();
+            }, Qt::QueuedConnection);
+        }
+        return;
+    }
+
+    QClipboard *clipboard = QApplication::clipboard();
+    if (!clipboard) {
+        if (qsc::telemetryEnabled()) {
+            qWarning() << "[Telemetry][Clipboard] host-clipboard-unavailable-before-legacy-paste";
+        }
+        return;
+    }
+
+    QString text = clipboard->text();
     if (qsc::telemetryEnabled()) {
         qInfo() << "[Telemetry][Clipboard] action=legacy-inject-text"
                 << "utf8Bytes=" << text.toUtf8().size()
                 << "thread=" << qsc::telemetryThreadId()
-                << "guiThread=" << isGuiThread();
+                << "guiThread=true";
     }
     postTextInput(text);
 }

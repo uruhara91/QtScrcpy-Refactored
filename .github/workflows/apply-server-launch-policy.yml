@@ -1,0 +1,21 @@
+name: Apply server launch policy
+on:
+  push:
+    branches: [experimental]
+    paths: [.github/workflows/apply-server-launch-policy.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+      - run: python3 .github/scripts/apply_server_launch_policy.py
+      - run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add QtScrcpy/QtScrcpyCore/src/device/server/server.cpp
+          git commit -m 'refactor(server): own scrcpy uid and log policy'
+          git push origin HEAD:experimental

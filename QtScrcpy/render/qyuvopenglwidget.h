@@ -49,7 +49,10 @@ private:
         std::array<void *, 3> mappedPtrs{nullptr, nullptr, nullptr};
         GLsync fence = nullptr;
         std::atomic<int> state{STATE_FREE};
-        std::uint64_t sequence = 0;
+        // Producer may reclaim a READY slot while the render thread is
+        // selecting the newest frame. Keep the sequence atomic so that this
+        // comparison is defined even when that reclamation races with a read.
+        std::atomic<std::uint64_t> sequence{0};
     };
 
     void initShader();

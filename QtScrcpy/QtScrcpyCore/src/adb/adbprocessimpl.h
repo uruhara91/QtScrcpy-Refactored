@@ -9,9 +9,10 @@ class AdbProcessImpl : public QProcess
 
 public:
     explicit AdbProcessImpl(QObject *parent = nullptr);
-    virtual ~AdbProcessImpl();
+    ~AdbProcessImpl() override;
 
     void execute(const QString &serial, const QStringList &args);
+    void terminateProcess();
     void forward(const QString &serial, quint16 localPort, const QString &deviceSocketName);
     void forwardRemove(const QString &serial, quint16 localPort);
     void reverse(const QString &serial, const QString &deviceSocketName, quint16 localPort);
@@ -36,7 +37,8 @@ private:
     void initSignals();
 
 private:
-    QString m_standardOutput = "";
-    QString m_errorOutput = "";
+    QString m_standardOutput;
+    QString m_errorOutput;
+    bool m_terminationRequested = false;
     static QString s_adbPath;
 };

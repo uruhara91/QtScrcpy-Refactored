@@ -11,7 +11,6 @@ void FileHandler::onPushFileRequest(const QString &serial,
                                     const QString &devicePath)
 {
     auto *adb = new qsc::AdbProcess(this);
-    constexpr bool isApk = false;
     connect(adb, &qsc::AdbProcess::adbProcessResult, adb,
             [this, adb](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
         onAdbProcessResult(adb, false, processResult);

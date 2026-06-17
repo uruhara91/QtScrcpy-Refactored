@@ -1,4 +1,5 @@
 #include "audiooutput.h"
+#include "qtscrcpytelemetry.h"
 
 #include <QAudioFormat>
 #include <QCoreApplication>
@@ -64,24 +65,9 @@ constexpr int DEFAULT_START_BUFFER_MS = 10;
 constexpr int DEFAULT_MAXIMUM_BUFFER_MS = 80;
 
 constexpr int CONNECT_TIMEOUT_MS = 8000;
-constexpr int CONNECT_RETRY_MS = 100;
+constexpr int CONNECT_RETRY_INITIAL_MS = 100;
+constexpr int CONNECT_RETRY_MAX_MS = 500;
 constexpr qint64 STARTUP_RECOVERY_WINDOW_MS = 1000;
-
-[[nodiscard]] int boundedEnvironmentValue(const char *name,
-                                          int fallback,
-                                          int minimum,
-                                          int maximum)
-{
-    bool ok = false;
-    const int value = qEnvironmentVariableIntValue(name, &ok);
-    return ok ? qBound(minimum, value, maximum) : fallback;
-}
-
-[[nodiscard]] bool environmentEnabled(const char *name, bool fallback)
-{
-    if (!qEnvironmentVariableIsSet(name)) return fallback;
-    return qEnvironmentVariableIntValue(name) != 0;
-}
 
 [[nodiscard]] quint32 read32be(const char *data) noexcept
 {
@@ -172,22 +158,22 @@ struct ScrcpyAudioWorker::Impl
 
     explicit Impl(ScrcpyAudioWorker *owner)
         : q(owner)
-        , outputBufferMs(boundedEnvironmentValue(
+        , outputBufferMs(qsc::telemetry::boundedEnvironmentInt(
               "QTSCRCPY_AUDIO_BUFFER_MS",
               DEFAULT_OUTPUT_BUFFER_MS,
               20,
               200))
-        , startBufferMs(boundedEnvironmentValue(
+        , startBufferMs(qsc::telemetry::boundedEnvironmentInt(
               "QTSCRCPY_AUDIO_START_MS",
               DEFAULT_START_BUFFER_MS,
               5,
               100))
-        , maximumBufferMs(boundedEnvironmentValue(
+        , maximumBufferMs(qsc::telemetry::boundedEnvironmentInt(
               "QTSCRCPY_AUDIO_MAX_MS",
               DEFAULT_MAXIMUM_BUFFER_MS,
               40,
               300))
-        , telemetryEnabled(environmentEnabled("QTSCRCPY_TELEMETRY", false))
+        , telemetryEnabled(qsc::telemetry::enabled())
         , pcmRing(static_cast<std::size_t>(
               std::max(maximumBufferMs + 40, 160) * BYTES_PER_MS))
     {
@@ -215,6 +201,7 @@ struct ScrcpyAudioWorker::Impl
     QTimer *retryTimer = nullptr;
     QTimer *pumpTimer = nullptr;
     QElapsedTimer connectElapsed;
+    QElapsedTimer startupElapsed;
     QElapsedTimer playbackElapsed;
 
     QByteArray inputBuffer;
@@ -248,6 +235,8 @@ struct ScrcpyAudioWorker::Impl
     bool playbackPrimed = false;
     bool announcedStarted = false;
     int connectionAttempts = 0;
+    int scheduledRetryMs = 0;
+    qint64 handshakeMs = -1;
 
     quint64 packetsReceived = 0;
     quint64 configPacketsSkipped = 0;
@@ -330,7 +319,7 @@ struct ScrcpyAudioWorker::Impl
         if (!ok || sdk != 30) return;
 
         qInfo() << "[Audio] Android 11 detected; keep the screen unlocked during startup";
-        if (!environmentEnabled("QTSCRCPY_AUDIO_WAKE_ANDROID11", true)) return;
+        if (!qsc::telemetry::environmentFlag("QTSCRCPY_AUDIO_WAKE_ANDROID11", true)) return;
 
         // The main mirror may have turned the display off. Android 11 requires
         // an unlocked foreground state while scrcpy initializes AudioRecord.
@@ -347,7 +336,11 @@ struct ScrcpyAudioWorker::Impl
         protocolStarted = false;
         playbackPrimed = false;
         playbackElapsed.invalidate();
+        connectElapsed.invalidate();
+        startupElapsed.invalidate();
         connectionAttempts = 0;
+        scheduledRetryMs = 0;
+        handshakeMs = -1;
         packetsReceived = 0;
         configPacketsSkipped = 0;
         framesDecoded = 0;
@@ -369,7 +362,9 @@ struct ScrcpyAudioWorker::Impl
         if (!telemetryEnabled || !announcedStarted) return;
 
         qInfo().nospace()
-            << "Audio stats - packets: " << packetsReceived
+            << "Audio stats - startup: " << handshakeMs
+            << "ms attempts: " << connectionAttempts
+            << " packets: " << packetsReceived
             << " config skipped: " << configPacketsSkipped
             << " decoded frames: " << framesDecoded
             << " pcm queued: " << pcmBytesQueued
@@ -425,6 +420,7 @@ struct ScrcpyAudioWorker::Impl
         stopping = false;
         announcedStarted = false;
         resetRuntimeState();
+        startupElapsed.start();
 
         prepareAndroid11Audio();
 
@@ -508,11 +504,11 @@ struct ScrcpyAudioWorker::Impl
         connectElapsed.start();
 
         retryTimer = new QTimer(q);
-        retryTimer->setInterval(CONNECT_RETRY_MS);
+        retryTimer->setSingleShot(true);
+        retryTimer->setTimerType(Qt::PreciseTimer);
         QObject::connect(retryTimer, &QTimer::timeout, q, [this]() {
             attemptConnect();
         });
-        retryTimer->start();
         attemptConnect();
     }
 
@@ -529,8 +525,14 @@ struct ScrcpyAudioWorker::Impl
             inputOffset = 0;
             inputState = InputState::DummyByte;
             protocolStarted = false;
-            qInfo() << "[Audio] ADB tunnel connected, attempt:"
-                    << connectionAttempts;
+            if (telemetryEnabled) {
+                qInfo() << "[Telemetry][Audio] tunnel-connected"
+                        << "attempt=" << connectionAttempts
+                        << "elapsedMs="
+                        << (connectElapsed.isValid()
+                                ? connectElapsed.elapsed()
+                                : -1);
+            }
         });
 
         QObject::connect(socket, &QTcpSocket::readyRead, q, [this]() {
@@ -550,15 +552,45 @@ struct ScrcpyAudioWorker::Impl
                 connectElapsed.elapsed() < CONNECT_TIMEOUT_MS &&
                 serverProcess &&
                 serverProcess->state() != QProcess::NotRunning) {
-                qInfo() << "[Audio] Android socket not ready yet; retrying";
-                QTimer::singleShot(CONNECT_RETRY_MS, q, [this]() {
-                    attemptConnect();
-                });
+                scheduleConnectRetry("android-socket-not-ready");
                 return;
             }
 
             fail(QStringLiteral("Audio: device audio stream disconnected"));
         });
+    }
+
+    [[nodiscard]] int nextRetryDelayMs() const noexcept
+    {
+        int delay = CONNECT_RETRY_INITIAL_MS;
+        const int growthSteps = std::min(connectionAttempts, 5);
+        for (int i = 0; i < growthSteps; ++i) {
+            delay = std::min(CONNECT_RETRY_MAX_MS,
+                             delay + std::max(delay / 2, 1));
+        }
+        return delay;
+    }
+
+    void scheduleConnectRetry(const char *reason)
+    {
+        if (!active || stopping || protocolStarted || !retryTimer) return;
+        if (retryTimer->isActive()) return;
+
+        if (connectElapsed.isValid() &&
+            connectElapsed.elapsed() >= CONNECT_TIMEOUT_MS) {
+            fail(QStringLiteral(
+                "Audio: timed out waiting for the Android audio socket"));
+            return;
+        }
+
+        scheduledRetryMs = nextRetryDelayMs();
+        if (telemetryEnabled) {
+            qInfo() << "[Telemetry][Audio] retry-scheduled"
+                    << "reason=" << reason
+                    << "delayMs=" << scheduledRetryMs
+                    << "attempts=" << connectionAttempts;
+        }
+        retryTimer->start(scheduledRetryMs);
     }
 
     void attemptConnect()
@@ -611,7 +643,15 @@ struct ScrcpyAudioWorker::Impl
                 inputState = InputState::CodecId;
                 protocolStarted = true;
                 if (retryTimer) retryTimer->stop();
+                handshakeMs = connectElapsed.isValid()
+                    ? connectElapsed.elapsed()
+                    : -1;
                 qInfo() << "[Audio] Android audio socket handshake completed";
+                if (telemetryEnabled) {
+                    qInfo() << "[Telemetry][Audio] handshake"
+                            << "elapsedMs=" << handshakeMs
+                            << "attempts=" << connectionAttempts;
+                }
                 continue;
             }
 
@@ -1079,12 +1119,12 @@ struct ScrcpyAudioWorker::Impl
     {
         if (pumpTimer) {
             pumpTimer->stop();
-            pumpTimer->deleteLater();
+            delete pumpTimer;
             pumpTimer = nullptr;
         }
         if (audioSink) {
             audioSink->stop();
-            audioSink->deleteLater();
+            delete audioSink;
             audioSink = nullptr;
         }
         audioIo = nullptr;
@@ -1095,6 +1135,11 @@ struct ScrcpyAudioWorker::Impl
     void stop(bool notify)
     {
         if (stopping) return;
+        if (!active && !announcedStarted && !serverProcess &&
+            !socket && !retryTimer && !pumpTimer &&
+            !audioSink && !codecContext) {
+            return;
+        }
         const bool wasActive = active || announcedStarted;
         stopping = true;
         active = false;
@@ -1104,13 +1149,13 @@ struct ScrcpyAudioWorker::Impl
 
         if (retryTimer) {
             retryTimer->stop();
-            retryTimer->deleteLater();
+            delete retryTimer;
             retryTimer = nullptr;
         }
         if (socket) {
             QObject::disconnect(socket, nullptr, q, nullptr);
             socket->abort();
-            socket->deleteLater();
+            delete socket;
             socket = nullptr;
         }
 
@@ -1118,16 +1163,20 @@ struct ScrcpyAudioWorker::Impl
         closeDecoder();
 
         if (serverProcess) {
-            QObject::disconnect(serverProcess, nullptr, q, nullptr);
-            if (serverProcess->state() != QProcess::NotRunning) {
-                serverProcess->terminate();
-                if (!serverProcess->waitForFinished(500)) {
-                    serverProcess->kill();
-                    serverProcess->waitForFinished(500);
+            QProcess *process = serverProcess;
+            serverProcess = nullptr;
+            QObject::disconnect(process, nullptr, q, nullptr);
+            if (process->state() != QProcess::NotRunning) {
+                process->terminate();
+                if (!process->waitForFinished(750)) {
+                    process->kill();
+                    if (!process->waitForFinished(3000)) {
+                        qWarning() << "[Audio] Waiting for adb process termination";
+                        process->waitForFinished(-1);
+                    }
                 }
             }
-            serverProcess->deleteLater();
-            serverProcess = nullptr;
+            delete process;
         }
 
         if (!serial.isEmpty() && localPort != 0) {
@@ -1143,6 +1192,12 @@ struct ScrcpyAudioWorker::Impl
         }
 
         resetRuntimeState();
+        serial.clear();
+        localServerPath.clear();
+        remoteServerPath.clear();
+        serverVersion.clear();
+        socketName.clear();
+        localPort = 0;
         announcedStarted = false;
         stopping = false;
 

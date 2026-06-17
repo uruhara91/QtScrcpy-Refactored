@@ -137,6 +137,7 @@ private:
     std::uint64_t m_configPacketCount = 0;
     std::uint64_t m_keyFrameCount = 0;
     std::uint64_t m_configPrependCount = 0;
+    std::uint64_t m_interruptedReads = 0;
     std::uint64_t m_readFailures = 0;
     std::uint64_t m_invalidPackets = 0;
     std::uint64_t m_allocationFailures = 0;

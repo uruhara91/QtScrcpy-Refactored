@@ -8,6 +8,8 @@
 #include <QThread>
 #include <QWaitCondition>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 
 extern "C"
 {
@@ -26,7 +28,7 @@ public:
     };
 
     explicit Recorder(const QString &fileName, QObject *parent = nullptr);
-    virtual ~Recorder() override;
+    ~Recorder() override;
 
     void setFrameSize(const QSize &declaredFrameSize);
     void setFormat(Recorder::RecorderFormat format);
@@ -46,15 +48,17 @@ private:
     RecorderFormat guessRecordFormat(const QString &fileName);
     bool write(AVPacket *packet);
 
-private:
     void packetDelete(AVPacket *packet);
     void queueClear();
+    void queueClearLocked();
+    void updateQueuePeaksLocked();
+    void logTelemetry() const;
 
 protected:
     void run() override;
 
 private:
-    QString m_fileName = "";
+    QString m_fileName;
     AVFormatContext *m_formatCtx = nullptr;
     QSize m_declaredFrameSize;
 
@@ -68,6 +72,14 @@ private:
     std::atomic_bool m_failed{false};
 
     QQueue<AVPacket *> m_queue;
+    std::size_t m_queuedBytes = 0;
+    std::size_t m_maxQueueBytes = 8U * 1024U * 1024U;
+    int m_maxQueuePackets = 240;
+    bool m_telemetryEnabled = false;
+
+    std::atomic<std::size_t> m_peakQueueBytes{0};
+    std::atomic<int> m_peakQueuePackets{0};
+    std::atomic<std::uint64_t> m_overflowEvents{0};
 };
 
 #endif // RECORDER_H

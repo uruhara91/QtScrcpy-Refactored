@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QProcess>
+#include <QSet>
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
 #include <QRegExp>
 #else
@@ -23,8 +24,8 @@ namespace {
 
 [[nodiscard]] QString normalizeScrcpyServerCommand(QString command)
 {
-    const bool useRoot =
-        qEnvironmentVariableIntValue("QTSCRCPY_SERVER_ROOT") > 0;
+    const bool useRoot = qsc::telemetry::environmentFlag(
+        "QTSCRCPY_SERVER_ROOT", false);
 
     if (!useRoot) {
         // Legacy QtScrcpy builds launch root first and fall back to shell:
@@ -43,7 +44,7 @@ namespace {
         }
     }
 
-    if (qsc::telemetryEnabled()) {
+    if (qsc::telemetry::enabled()) {
         static const char *const levels[] = {
             "verbose", "debug", "info", "warn", "error"
         };
@@ -94,7 +95,7 @@ const QString &AdbProcessImpl::getAdbPath()
 #else
             potentialPaths << QCoreApplication::applicationDirPath() + "/adb";
 #endif
-        } else if (qsc::telemetryEnabled()) {
+        } else if (qsc::telemetry::enabled()) {
             qInfo() << "[Telemetry][ADB] app-dir-candidate-skipped"
                     << "reason=no-qcoreapplication";
         }
@@ -108,7 +109,6 @@ const QString &AdbProcessImpl::getAdbPath()
         }
 
         if (s_adbPath.isEmpty()) {
-            // 如果所有路径都不满足条件，可以选择抛出异常或设置默认值
             qWarning() << "ADB路径未找到";
         } else {
             qInfo("adb path: %s", QDir(s_adbPath).absolutePath().toUtf8().data());
@@ -119,14 +119,10 @@ const QString &AdbProcessImpl::getAdbPath()
 
 void AdbProcessImpl::initSignals()
 {
-    // aboutToQuit not exit event loop, so deletelater is ok
-    //connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &AdbProcessImpl::deleteLater);
-
     connect(this, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this, [this](int exitCode, QProcess::ExitStatus exitStatus) {
         if (NormalExit == exitStatus && 0 == exitCode) {
             emit adbProcessImplResult(qsc::AdbProcess::AER_SUCCESS_EXEC);
         } else {
-            //P7C0218510000537        unauthorized ,手机端此时弹出调试认证，要允许调试
             emit adbProcessImplResult(qsc::AdbProcess::AER_ERROR_EXEC);
         }
         qDebug() << "adb return " << exitCode << "exit status " << exitStatus;
@@ -143,22 +139,29 @@ void AdbProcessImpl::initSignals()
     });
 
     connect(this, &QProcess::readyReadStandardError, this, [this]() {
-        QString tmp = QString::fromUtf8(readAllStandardError()).trimmed();
+        const QString tmp = QString::fromUtf8(readAllStandardError()).trimmed();
         m_errorOutput += tmp;
         qWarning() << QString("AdbProcessImpl::error:%1").arg(tmp).toStdString().data();
     });
 
     connect(this, &QProcess::readyReadStandardOutput, this, [this]() {
-        QString tmp = QString::fromUtf8(readAllStandardOutput()).trimmed();
+        const QString tmp = QString::fromUtf8(readAllStandardOutput()).trimmed();
         m_standardOutput += tmp;
         qInfo() << QString("AdbProcessImpl::out:%1").arg(tmp).toStdString().data();
     });
 
-    connect(this, &QProcess::started, this, [this]() { emit adbProcessImplResult(qsc::AdbProcess::AER_SUCCESS_START); });
+    connect(this, &QProcess::started, this, [this]() {
+        emit adbProcessImplResult(qsc::AdbProcess::AER_SUCCESS_START);
+    });
 }
 
 void AdbProcessImpl::execute(const QString &serial, const QStringList &args)
 {
+    // Every invocation owns its output. Keeping previous command output caused
+    // repeated `adb devices` scans to return duplicate serials and stale errors.
+    m_standardOutput.clear();
+    m_errorOutput.clear();
+
     QStringList normalizedArgs = args;
     if (isScrcpyServerCommand(normalizedArgs)) {
         normalizedArgs[1] = normalizeScrcpyServerCommand(normalizedArgs.at(1));
@@ -166,24 +169,20 @@ void AdbProcessImpl::execute(const QString &serial, const QStringList &args)
 
     QStringList adbArgs;
     adbArgs.reserve(normalizedArgs.size() + 2);
-    
+
     if (!serial.isEmpty()) {
         adbArgs << QStringLiteral("-s") << serial;
     }
     adbArgs.append(normalizedArgs);
 
     if (s_adbPath.isEmpty()) getAdbPath();
-    
+
     start(s_adbPath, adbArgs);
 }
 
 bool AdbProcessImpl::isRuning()
 {
-    if (QProcess::NotRunning == state()) {
-        return false;
-    } else {
-        return true;
-    }
+    return state() != QProcess::NotRunning;
 }
 
 void AdbProcessImpl::setShowTouchesEnabled(const QString &serial, bool enabled)
@@ -200,7 +199,6 @@ void AdbProcessImpl::setShowTouchesEnabled(const QString &serial, bool enabled)
 
 QStringList AdbProcessImpl::getDevicesSerialFromStdOut()
 {
-    // get devices serial by adb devices
     QStringList serials;
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
     QRegExp lineExp("\r\n|\n");
@@ -209,20 +207,28 @@ QStringList AdbProcessImpl::getDevicesSerialFromStdOut()
     QRegularExpression lineExp("\r\n|\n");
     QRegularExpression tExp("\t");
 #endif
-    QStringList devicesInfoList = m_standardOutput.split(lineExp);
-    for (QString deviceInfo : devicesInfoList) {
-        QStringList deviceInfos = deviceInfo.split(tExp);
-        if (2 == deviceInfos.count() && 0 == deviceInfos[1].compare("device")) {
-            serials << deviceInfos[0];
+
+    QSet<QString> seen;
+    const QStringList devicesInfoList = m_standardOutput.split(lineExp);
+    for (const QString &deviceInfo : devicesInfoList) {
+        const QStringList deviceInfos = deviceInfo.split(tExp);
+        if (deviceInfos.count() != 2 ||
+            deviceInfos[1] != QStringLiteral("device")) {
+            continue;
         }
+
+        const QString serial = deviceInfos[0].trimmed();
+        if (serial.isEmpty() || seen.contains(serial)) continue;
+        seen.insert(serial);
+        serials << serial;
     }
     return serials;
 }
 
 QString AdbProcessImpl::getDeviceIPFromStdOut()
 {
-    QString ip = "";
-    QString strIPExp = "inet addr:[\\d.]*";
+    QString ip;
+    const QString strIPExp = "inet addr:[\\d.]*";
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
     QRegExp ipRegExp(strIPExp, Qt::CaseInsensitive);
     if (ipRegExp.indexIn(m_standardOutput) != -1) {
@@ -243,9 +249,8 @@ QString AdbProcessImpl::getDeviceIPFromStdOut()
 
 QString AdbProcessImpl::getDeviceIPByIpFromStdOut()
 {
-    QString ip = "";
-
-    QString strIPExp = "wlan0    inet [\\d.]*";
+    QString ip;
+    const QString strIPExp = "wlan0    inet [\\d.]*";
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
     QRegExp ipRegExp(strIPExp, Qt::CaseInsensitive);
     if (ipRegExp.indexIn(m_standardOutput) != -1) {
@@ -312,27 +317,15 @@ void AdbProcessImpl::reverseRemove(const QString &serial, const QString &deviceS
 
 void AdbProcessImpl::push(const QString &serial, const QString &local, const QString &remote)
 {
-    QStringList adbArgs;
-    adbArgs << "push";
-    adbArgs << local;
-    adbArgs << remote;
-    execute(serial, adbArgs);
+    execute(serial, {QStringLiteral("push"), local, remote});
 }
 
 void AdbProcessImpl::install(const QString &serial, const QString &local)
 {
-    QStringList adbArgs;
-    adbArgs << "install";
-    adbArgs << "-r";
-    adbArgs << local;
-    execute(serial, adbArgs);
+    execute(serial, {QStringLiteral("install"), QStringLiteral("-r"), local});
 }
 
 void AdbProcessImpl::removePath(const QString &serial, const QString &path)
 {
-    QStringList adbArgs;
-    adbArgs << "shell";
-    adbArgs << "rm";
-    adbArgs << path;
-    execute(serial, adbArgs);
+    execute(serial, {QStringLiteral("shell"), QStringLiteral("rm"), path});
 }

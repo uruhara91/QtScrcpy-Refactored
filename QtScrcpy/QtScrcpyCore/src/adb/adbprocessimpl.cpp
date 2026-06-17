@@ -13,55 +13,6 @@
 #include "adbprocessimpl.h"
 #include "qtscrcpytelemetry.h"
 
-namespace {
-
-[[nodiscard]] bool isScrcpyServerCommand(const QStringList &args) noexcept
-{
-    return args.size() >= 2 &&
-           args.constFirst() == QStringLiteral("shell") &&
-           args.at(1).contains(QStringLiteral("com.genymobile.scrcpy.Server"));
-}
-
-[[nodiscard]] QString normalizeScrcpyServerCommand(QString command)
-{
-    const bool useRoot = qsc::telemetry::environmentFlag(
-        "QTSCRCPY_SERVER_ROOT", false);
-
-    if (!useRoot) {
-        const QString separator = QStringLiteral("' || ");
-        const int fallbackPos = command.indexOf(separator);
-        if (command.startsWith(QStringLiteral("su -c '")) && fallbackPos >= 0) {
-            command = command.mid(fallbackPos + separator.size());
-        } else if (command.startsWith(QStringLiteral("su -c '")) &&
-                   command.endsWith(QLatin1Char('\'')) &&
-                   command.size() > 8) {
-            command = command.mid(7, command.size() - 8);
-        }
-    }
-
-    if (qsc::telemetry::enabled()) {
-        static const char *const levels[] = {
-            "verbose", "debug", "info", "warn", "error"
-        };
-        for (const char *level : levels) {
-            const QString token = QStringLiteral("log_level=") +
-                                  QString::fromLatin1(level);
-            if (command.contains(token)) {
-                command.replace(token, QStringLiteral("log_level=debug"));
-                break;
-            }
-        }
-
-        qInfo() << "[Telemetry][Server] normalized-launch"
-                << "uidMode=" << (useRoot ? "root" : "shell")
-                << "debugLog=true";
-    }
-
-    return command;
-}
-
-} // namespace
-
 QString AdbProcessImpl::s_adbPath;
 extern QString g_adbPath;
 
@@ -72,7 +23,7 @@ AdbProcessImpl::AdbProcessImpl(QObject *parent) : QProcess(parent)
 
 AdbProcessImpl::~AdbProcessImpl()
 {
-    if (isRuning()) terminateProcess();
+    terminateProcess();
 }
 
 const QString &AdbProcessImpl::getAdbPath()
@@ -94,7 +45,7 @@ const QString &AdbProcessImpl::getAdbPath()
         }
 
         for (const QString &path : potentialPaths) {
-            QFileInfo fileInfo(path);
+            const QFileInfo fileInfo(path);
             if (!path.isEmpty() && fileInfo.isFile()) {
                 s_adbPath = path;
                 break;
@@ -113,7 +64,8 @@ const QString &AdbProcessImpl::getAdbPath()
 void AdbProcessImpl::initSignals()
 {
     connect(this,
-            static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished),
+            static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(
+                &QProcess::finished),
             this,
             [this](int exitCode, QProcess::ExitStatus exitStatus) {
         const bool intentional = m_terminationRequested;
@@ -159,13 +111,19 @@ void AdbProcessImpl::initSignals()
     connect(this, &QProcess::readyReadStandardError, this, [this]() {
         const QString tmp = QString::fromUtf8(readAllStandardError()).trimmed();
         m_errorOutput += tmp;
-        qWarning() << QString("AdbProcessImpl::error:%1").arg(tmp).toStdString().data();
+        qWarning() << QString("AdbProcessImpl::error:%1")
+                          .arg(tmp)
+                          .toStdString()
+                          .data();
     });
 
     connect(this, &QProcess::readyReadStandardOutput, this, [this]() {
         const QString tmp = QString::fromUtf8(readAllStandardOutput()).trimmed();
         m_standardOutput += tmp;
-        qInfo() << QString("AdbProcessImpl::out:%1").arg(tmp).toStdString().data();
+        qInfo() << QString("AdbProcessImpl::out:%1")
+                       .arg(tmp)
+                       .toStdString()
+                       .data();
     });
 
     connect(this, &QProcess::started, this, [this]() {
@@ -179,18 +137,13 @@ void AdbProcessImpl::execute(const QString &serial, const QStringList &args)
     m_standardOutput.clear();
     m_errorOutput.clear();
 
-    QStringList normalizedArgs = args;
-    if (isScrcpyServerCommand(normalizedArgs)) {
-        normalizedArgs[1] = normalizeScrcpyServerCommand(normalizedArgs.at(1));
-    }
-
     QStringList adbArgs;
-    adbArgs.reserve(normalizedArgs.size() + 2);
+    adbArgs.reserve(args.size() + 2);
 
     if (!serial.isEmpty()) {
         adbArgs << QStringLiteral("-s") << serial;
     }
-    adbArgs.append(normalizedArgs);
+    adbArgs.append(args);
 
     if (s_adbPath.isEmpty()) getAdbPath();
     start(s_adbPath, adbArgs);
@@ -199,8 +152,20 @@ void AdbProcessImpl::execute(const QString &serial, const QStringList &args)
 void AdbProcessImpl::terminateProcess()
 {
     if (!isRuning()) return;
+
     m_terminationRequested = true;
+    QProcess::terminate();
+    if (waitForFinished(250)) return;
+
     QProcess::kill();
+    if (waitForFinished(3000)) return;
+
+    // A QProcess must not be destroyed while the child is still running.
+    // Reaching this point should be exceptional after SIGKILL, but waiting for
+    // the OS reap is safer than leaking a live adb subprocess or triggering Qt's
+    // destruction warning.
+    qWarning() << "ADB process did not stop after kill; waiting for reap";
+    waitForFinished(-1);
 }
 
 bool AdbProcessImpl::isRuning()

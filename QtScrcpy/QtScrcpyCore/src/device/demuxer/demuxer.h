@@ -6,6 +6,7 @@
 #include <QThread>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -123,11 +124,23 @@ protected:
 private:
     bool processNetworkPacket(PacketHandle &packet);
     qint32 recvData(quint8 *buf, qint32 bufSize);
+    void logTelemetry() const;
 
 private:
     QPointer<VideoSocket> m_videoSocket;
     std::vector<uint8_t> m_configBuffer;
     std::atomic<bool> m_isInterrupted{false};
+    bool m_telemetryEnabled = false;
+
+    std::uint64_t m_packetCount = 0;
+    std::uint64_t m_payloadBytes = 0;
+    std::uint64_t m_configPacketCount = 0;
+    std::uint64_t m_keyFrameCount = 0;
+    std::uint64_t m_configPrependCount = 0;
+    std::uint64_t m_readFailures = 0;
+    std::uint64_t m_invalidPackets = 0;
+    std::uint64_t m_allocationFailures = 0;
+    std::uint32_t m_maxPayloadBytes = 0;
 };
 
 #endif // STREAM_H

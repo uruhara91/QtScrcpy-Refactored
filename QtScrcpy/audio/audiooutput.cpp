@@ -237,6 +237,7 @@ struct ScrcpyAudioWorker::Impl
     int connectionAttempts = 0;
     int scheduledRetryMs = 0;
     qint64 handshakeMs = -1;
+    qint64 totalStartupMs = -1;
 
     quint64 packetsReceived = 0;
     quint64 configPacketsSkipped = 0;
@@ -272,7 +273,13 @@ struct ScrcpyAudioWorker::Impl
 
         if (!process.waitForFinished(timeoutMs)) {
             process.kill();
-            process.waitForFinished(500);
+            if (!process.waitForFinished(3000)) {
+                if (telemetryEnabled) {
+                    qWarning() << "[Telemetry][Audio] waiting-for-adb-reap"
+                               << "arguments=" << arguments;
+                }
+                process.waitForFinished(-1);
+            }
             if (reportFailure) {
                 qWarning() << "[Audio] adb command timed out:" << arguments;
             }
@@ -341,6 +348,7 @@ struct ScrcpyAudioWorker::Impl
         connectionAttempts = 0;
         scheduledRetryMs = 0;
         handshakeMs = -1;
+        totalStartupMs = -1;
         packetsReceived = 0;
         configPacketsSkipped = 0;
         framesDecoded = 0;
@@ -362,7 +370,8 @@ struct ScrcpyAudioWorker::Impl
         if (!telemetryEnabled || !announcedStarted) return;
 
         qInfo().nospace()
-            << "Audio stats - startup: " << handshakeMs
+            << "Audio stats - startup total: " << totalStartupMs
+            << "ms handshake: " << handshakeMs
             << "ms attempts: " << connectionAttempts
             << " packets: " << packetsReceived
             << " config skipped: " << configPacketsSkipped
@@ -680,7 +689,16 @@ struct ScrcpyAudioWorker::Impl
                 if (!openDecoder() || !openAudioSink()) return;
 
                 inputState = InputState::Packets;
+                totalStartupMs = startupElapsed.isValid()
+                    ? startupElapsed.elapsed()
+                    : -1;
                 announcedStarted = true;
+                if (telemetryEnabled) {
+                    qInfo() << "[Telemetry][Audio] started"
+                            << "totalMs=" << totalStartupMs
+                            << "handshakeMs=" << handshakeMs
+                            << "attempts=" << connectionAttempts;
+                }
                 emit q->started();
                 continue;
             }

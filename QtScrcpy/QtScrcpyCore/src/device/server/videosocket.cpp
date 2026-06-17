@@ -28,11 +28,11 @@ void VideoSocket::logTelemetry() const
         static_cast<double>(m_maxWaitNanoseconds) / 1'000'000.0;
 
     qInfo() << "[Telemetry][VideoSocket] reads"
-            << "bytes=" << m_totalBytesRead
-            << "readCalls=" << m_readCalls
-            << "waitCalls=" << m_waitCalls
-            << "waitTimeouts=" << m_waitTimeouts
-            << "failedReads=" << m_failedReads
+            << "bytes=" << static_cast<qulonglong>(m_totalBytesRead)
+            << "readCalls=" << static_cast<qulonglong>(m_readCalls)
+            << "waitCalls=" << static_cast<qulonglong>(m_waitCalls)
+            << "waitTimeouts=" << static_cast<qulonglong>(m_waitTimeouts)
+            << "failedReads=" << static_cast<qulonglong>(m_failedReads)
             << "totalWaitMs=" << totalWaitMs
             << "maxWaitMs=" << maxWaitMs
             << "maxReadChunk=" << m_maxReadChunk
@@ -73,9 +73,11 @@ qint32 VideoSocket::subThreadRecvData(quint8 *buf, qint32 bufSize)
 
             if (!ready) {
                 ++m_waitTimeouts;
+                // A finite timeout is expected while the peer is idle. Qt may
+                // report SocketTimeoutError here even though the connection is
+                // still healthy, so only quit/state determine termination.
                 if (m_quit.load(std::memory_order_acquire) ||
-                    state() != QAbstractSocket::ConnectedState ||
-                    error() != QAbstractSocket::UnknownSocketError) {
+                    state() != QAbstractSocket::ConnectedState) {
                     ++m_failedReads;
                     return -1;
                 }
@@ -90,8 +92,7 @@ qint32 VideoSocket::subThreadRecvData(quint8 *buf, qint32 bufSize)
 
         if (chunk <= 0) {
             if (chunk < 0 ||
-                state() != QAbstractSocket::ConnectedState ||
-                error() != QAbstractSocket::UnknownSocketError) {
+                state() != QAbstractSocket::ConnectedState) {
                 ++m_failedReads;
                 return -1;
             }

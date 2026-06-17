@@ -1,8 +1,8 @@
 ﻿#include <QApplication>
 #include <QDebug>
 #include <QFile>
-#ifdef Q_OS_LINUX
 #include <QFileInfo>
+#ifdef Q_OS_LINUX
 #include <QIcon>
 #endif
 #include <QSurfaceFormat>

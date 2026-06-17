@@ -85,12 +85,19 @@ const QString &AdbProcessImpl::getAdbPath()
 {
     if (s_adbPath.isEmpty()) {
         QStringList potentialPaths;
-        potentialPaths << QString::fromLocal8Bit(qgetenv("QTSCRCPY_ADB_PATH")) << g_adbPath
+        potentialPaths << QString::fromLocal8Bit(qgetenv("QTSCRCPY_ADB_PATH"))
+                       << g_adbPath;
+
+        if (QCoreApplication::instance()) {
 #ifdef Q_OS_WIN32
-                       << QCoreApplication::applicationDirPath() + "/adb.exe";
+            potentialPaths << QCoreApplication::applicationDirPath() + "/adb.exe";
 #else
-                       << QCoreApplication::applicationDirPath() + "/adb";
+            potentialPaths << QCoreApplication::applicationDirPath() + "/adb";
 #endif
+        } else if (qsc::telemetryEnabled()) {
+            qInfo() << "[Telemetry][ADB] app-dir-candidate-skipped"
+                    << "reason=no-qcoreapplication";
+        }
 
         for (const QString &path : potentialPaths) {
             QFileInfo fileInfo(path);

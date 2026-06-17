@@ -109,6 +109,8 @@ void Demuxer::logTelemetry() const
             << "keyFrames=" << static_cast<qulonglong>(m_keyFrameCount)
             << "configPrepends="
             << static_cast<qulonglong>(m_configPrependCount)
+            << "interruptedReads="
+            << static_cast<qulonglong>(m_interruptedReads)
             << "readFailures=" << static_cast<qulonglong>(m_readFailures)
             << "invalidPackets=" << static_cast<qulonglong>(m_invalidPackets)
             << "allocationFailures="
@@ -147,7 +149,11 @@ bool Demuxer::processNetworkPacket(PacketHandle &packet)
 
     quint8 header[HEADER_SIZE];
     if (recvData(header, HEADER_SIZE) != HEADER_SIZE) {
-        ++m_readFailures;
+        if (m_isInterrupted.load(std::memory_order_acquire)) {
+            ++m_interruptedReads;
+        } else {
+            ++m_readFailures;
+        }
         return false;
     }
 
@@ -185,7 +191,11 @@ bool Demuxer::processNetworkPacket(PacketHandle &packet)
 
     if (recvData(writePtr, static_cast<qint32>(payloadLength)) !=
         static_cast<qint32>(payloadLength)) {
-        ++m_readFailures;
+        if (m_isInterrupted.load(std::memory_order_acquire)) {
+            ++m_interruptedReads;
+        } else {
+            ++m_readFailures;
+        }
         return false;
     }
 

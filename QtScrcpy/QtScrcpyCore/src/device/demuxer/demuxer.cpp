@@ -1,8 +1,10 @@
 #include "demuxer.h"
 #include "videosocket.h"
 #include "compat.h"
+#include "qtscrcpytelemetry.h"
 
 #include <QDebug>
+#include <algorithm>
 #include <bit>
 #include <cstdarg>
 #include <cstdint>
@@ -43,7 +45,9 @@ static void avLogCallback(void *avcl, int level, const char *fmt, va_list vl)
     else qWarning().noquote() << localMessage;
 }
 
-Demuxer::Demuxer(QObject *parent) : QThread(parent)
+Demuxer::Demuxer(QObject *parent)
+    : QThread(parent)
+    , m_telemetryEnabled(qsc::telemetry::enabled())
 {
     m_configBuffer.reserve(64U * 1024U);
 }
@@ -73,7 +77,7 @@ void Demuxer::installVideoSocket(VideoSocket *videoSocket)
 
 qint32 Demuxer::recvData(quint8 *buf, qint32 bufSize)
 {
-    if (!buf || !m_videoSocket) return 0;
+    if (!buf || !m_videoSocket) return -1;
     return m_videoSocket->subThreadRecvData(buf, bufSize);
 }
 
@@ -92,14 +96,38 @@ void Demuxer::stopDecode()
     if (isRunning()) wait();
 }
 
+void Demuxer::logTelemetry() const
+{
+    if (!m_telemetryEnabled) return;
+
+    qInfo() << "[Telemetry][Demuxer] packets"
+            << "count=" << static_cast<qulonglong>(m_packetCount)
+            << "payloadBytes=" << static_cast<qulonglong>(m_payloadBytes)
+            << "maxPayloadBytes=" << m_maxPayloadBytes
+            << "configPackets="
+            << static_cast<qulonglong>(m_configPacketCount)
+            << "keyFrames=" << static_cast<qulonglong>(m_keyFrameCount)
+            << "configPrepends="
+            << static_cast<qulonglong>(m_configPrependCount)
+            << "readFailures=" << static_cast<qulonglong>(m_readFailures)
+            << "invalidPackets=" << static_cast<qulonglong>(m_invalidPackets)
+            << "allocationFailures="
+            << static_cast<qulonglong>(m_allocationFailures);
+}
+
 void Demuxer::run()
 {
     while (!m_isInterrupted.load(std::memory_order_acquire)) {
         PacketHandle packet = acquirePacketHandle();
-        if (!packet || !processNetworkPacket(packet)) break;
+        if (!packet) {
+            ++m_allocationFailures;
+            break;
+        }
+        if (!processNetworkPacket(packet)) break;
     }
 
     m_configBuffer.clear();
+    logTelemetry();
 
     if (m_videoSocket) {
         m_videoSocket->close();
@@ -112,41 +140,65 @@ void Demuxer::run()
 
 bool Demuxer::processNetworkPacket(PacketHandle &packet)
 {
-    if (!packet) return false;
+    if (!packet) {
+        ++m_allocationFailures;
+        return false;
+    }
 
     quint8 header[HEADER_SIZE];
-    if (recvData(header, HEADER_SIZE) < HEADER_SIZE) return false;
+    if (recvData(header, HEADER_SIZE) != HEADER_SIZE) {
+        ++m_readFailures;
+        return false;
+    }
 
     const std::uint64_t ptsFlags = readBigEndian<std::uint64_t>(header);
     const std::uint32_t payloadLength = readBigEndian<std::uint32_t>(&header[8]);
-    if (payloadLength == 0 || payloadLength > MAX_NETWORK_PACKET_SIZE) return false;
+    if (payloadLength == 0 || payloadLength > MAX_NETWORK_PACKET_SIZE) {
+        ++m_invalidPackets;
+        return false;
+    }
 
     const bool isConfig = (ptsFlags & SC_PACKET_FLAG_CONFIG) != 0;
+    const bool isKeyFrame = (ptsFlags & SC_PACKET_FLAG_KEY_FRAME) != 0;
     const bool prependConfig = !isConfig && !m_configBuffer.empty();
     const std::size_t configLength = prependConfig ? m_configBuffer.size() : 0;
 
-    if (configLength > static_cast<std::size_t>(std::numeric_limits<int>::max()) - payloadLength) {
+    if (configLength >
+        static_cast<std::size_t>(std::numeric_limits<int>::max()) -
+            payloadLength) {
+        ++m_invalidPackets;
         return false;
     }
 
     const int totalLength = static_cast<int>(configLength + payloadLength);
-    if (av_new_packet(packet.get(), totalLength) != 0) return false;
+    if (av_new_packet(packet.get(), totalLength) != 0) {
+        ++m_allocationFailures;
+        return false;
+    }
 
     uint8_t *writePtr = packet->data;
     if (prependConfig) {
         std::memcpy(writePtr, m_configBuffer.data(), configLength);
         writePtr += configLength;
+        ++m_configPrependCount;
     }
 
-    if (recvData(writePtr, static_cast<qint32>(payloadLength)) <
+    if (recvData(writePtr, static_cast<qint32>(payloadLength)) !=
         static_cast<qint32>(payloadLength)) {
+        ++m_readFailures;
         return false;
     }
+
+    ++m_packetCount;
+    m_payloadBytes += payloadLength;
+    m_maxPayloadBytes = std::max(m_maxPayloadBytes, payloadLength);
+    if (isConfig) ++m_configPacketCount;
+    if (isKeyFrame) ++m_keyFrameCount;
 
     packet->pts = isConfig ? AV_NOPTS_VALUE
                            : static_cast<int64_t>(ptsFlags & SC_PACKET_PTS_MASK);
     packet->dts = packet->pts;
-    if (ptsFlags & SC_PACKET_FLAG_KEY_FRAME) packet->flags |= AV_PKT_FLAG_KEY;
+    if (isKeyFrame) packet->flags |= AV_PKT_FLAG_KEY;
 
     if (isConfig) {
         m_configBuffer.assign(packet->data, packet->data + packet->size);

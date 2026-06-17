@@ -1,0 +1,21 @@
+name: Apply dialog adb state machine
+on:
+  push:
+    branches: [experimental]
+    paths: [.github/workflows/apply-dialog-adb-state-machine.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+      - run: python3 .github/scripts/apply_dialog_adb_state_machine.py
+      - run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add QtScrcpy/ui/dialog.cpp
+          git commit -m 'refactor(ui): make adb device workflows completion-driven'
+          git push origin HEAD:experimental

@@ -140,5 +140,5 @@ void ProtocolTests::deviceMessageRejectsMalformedHeaders()
     QCOMPARE(message.type(), DeviceMsg::DMT_NULL);
 }
 
-QTEST_MAIN(ProtocolTests)
+QTEST_APPLESS_MAIN(ProtocolTests)
 #include "protocol_tests.moc"

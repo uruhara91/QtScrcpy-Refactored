@@ -1,6 +1,7 @@
 #include "decoder.h"
 #include "videobuffer.h"
 #include "compat.h"
+#include "qtscrcpytelemetry.h"
 
 #include <QDebug>
 #include <QMutexLocker>
@@ -23,7 +24,7 @@ Decoder::Decoder(FrameCallback onFrame, QObject *parent)
     , m_onFrame(std::move(onFrame))
 {
     m_packetQueue.reserve(MAX_PACKET_QUEUE_SIZE);
-    m_telemetryEnabled = qEnvironmentVariableIntValue("QTSCRCPY_TELEMETRY") > 0;
+    m_telemetryEnabled = qsc::telemetry::enabled();
 
     if (m_vb) {
         connect(m_vb.get(), &VideoBuffer::updateFPS,
@@ -39,16 +40,10 @@ Decoder::~Decoder()
 
 int Decoder::selectDecoderThreadCount() const
 {
-    bool configured = false;
-    const int requested = qEnvironmentVariableIntValue(
-        "QTSCRCPY_DECODER_THREADS", &configured);
-
-    if (configured) {
-        return requested == 0 ? 0 : qBound(1, requested, 32);
-    }
-
     const int logicalCpus = QThread::idealThreadCount();
-    return logicalCpus > 1 ? logicalCpus - 1 : 1;
+    const int fallback = logicalCpus > 1 ? logicalCpus - 1 : 1;
+    return qsc::telemetry::boundedEnvironmentInt(
+        "QTSCRCPY_DECODER_THREADS", fallback, 0, 32);
 }
 
 bool Decoder::open()
@@ -339,7 +334,7 @@ void Decoder::logQueueHealth() const
     const auto recoveries = m_recoveryEvents.load(std::memory_order_relaxed);
     if (dropped == 0 && recoveries == 0) return;
 
-    qInfo() << "Decoder queue stats - max depth:"
+    qInfo() << "[Telemetry][Decoder] queue maxDepth="
             << m_maximumQueueDepth.load(std::memory_order_relaxed)
             << "dropped:" << dropped
             << "recovery events:" << recoveries;
@@ -362,13 +357,13 @@ void Decoder::logTimingStats() const
             << " max=" << summary.maxUs / 1000.0 << "ms";
     };
 
-    qInfo() << "Decoder queue stats - max depth:"
+    qInfo() << "[Telemetry][Decoder] queue maxDepth="
             << m_maximumQueueDepth.load(std::memory_order_relaxed)
             << "dropped:" << m_droppedPackets.load(std::memory_order_relaxed)
             << "recovery events:" << m_recoveryEvents.load(std::memory_order_relaxed);
-    logWindow("Decoder queue wait", queue);
-    logWindow("Decoder worker service", service);
-    logWindow("Decoded frame interval", interval);
+    logWindow("[Telemetry][Decoder] queueWait", queue);
+    logWindow("[Telemetry][Decoder] workerService", service);
+    logWindow("[Telemetry][Decoder] frameInterval", interval);
 }
 
 void Decoder::peekFrame(std::function<void(int, int, uint8_t *)> onFrame)

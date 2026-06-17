@@ -1,4 +1,5 @@
 #include "qyuvopenglwidget.h"
+#include "qtscrcpytelemetry.h"
 
 #include <QDebug>
 #include <QMetaObject>
@@ -46,7 +47,7 @@ void main(void) {
 QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent)
     : QOpenGLWidget(parent)
 {
-    m_telemetryEnabled = qEnvironmentVariableIntValue("QTSCRCPY_TELEMETRY") > 0;
+    m_telemetryEnabled = qsc::telemetry::enabled();
 
     QSurfaceFormat format;
     format.setVersion(4, 5);
@@ -107,7 +108,7 @@ QYuvOpenGLWidget::~QYuvOpenGLWidget()
     }
 
     if (m_telemetryEnabled) {
-        qInfo() << "Render mailbox stats - submitted:"
+        qInfo() << "[Telemetry][Renderer] mailbox submitted="
                 << m_submittedFrames.load(std::memory_order_relaxed)
                 << "rendered:"
                 << m_renderedFrames.load(std::memory_order_relaxed)

@@ -79,16 +79,17 @@ bool Server::enableTunnelReverse()
 
 bool Server::disableTunnelReverse()
 {
-    qsc::AdbProcess *adb = new qsc::AdbProcess();
-    if (!adb) {
-        return false;
-    }
-    connect(adb, &qsc::AdbProcess::adbProcessResult, this, [this](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
-        if (qsc::AdbProcess::AER_SUCCESS_START != processResult) {
-            sender()->deleteLater();
+    auto *adb = new qsc::AdbProcess(this);
+    connect(adb, &qsc::AdbProcess::adbProcessResult, adb,
+            [adb](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
+        if (processResult != qsc::AdbProcess::AER_SUCCESS_START) {
+            adb->deleteLater();
         }
     });
-    adb->reverseRemove(m_params.serial, QString(SOCKET_NAME_PREFIX "_%1").arg(m_params.scid, 8, 16, QChar('0')));
+    adb->reverseRemove(
+        m_params.serial,
+        QString(SOCKET_NAME_PREFIX "_%1")
+            .arg(m_params.scid, 8, 16, QChar('0')));
     return true;
 }
 
@@ -102,13 +103,11 @@ bool Server::enableTunnelForward()
 }
 bool Server::disableTunnelForward()
 {
-    qsc::AdbProcess *adb = new qsc::AdbProcess();
-    if (!adb) {
-        return false;
-    }
-    connect(adb, &qsc::AdbProcess::adbProcessResult, this, [this](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
-        if (qsc::AdbProcess::AER_SUCCESS_START != processResult) {
-            sender()->deleteLater();
+    auto *adb = new qsc::AdbProcess(this);
+    connect(adb, &qsc::AdbProcess::adbProcessResult, adb,
+            [adb](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
+        if (processResult != qsc::AdbProcess::AER_SUCCESS_START) {
+            adb->deleteLater();
         }
     });
     adb->forwardRemove(m_params.serial, m_params.localPort);

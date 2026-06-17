@@ -160,12 +160,10 @@ void AdbProcessImpl::terminateProcess()
     QProcess::kill();
     if (waitForFinished(3000)) return;
 
-    // A QProcess must not be destroyed while the child is still running.
-    // Reaching this point should be exceptional after SIGKILL, but waiting for
-    // the OS reap is safer than leaking a live adb subprocess or triggering Qt's
-    // destruction warning.
-    qWarning() << "ADB process did not stop after kill; waiting for reap";
-    waitForFinished(-1);
+    // Do not turn application shutdown into an unbounded wait. Reaching
+    // this path after SIGKILL is exceptional; keep the diagnostic explicit and
+    // let Qt report the remaining lifecycle violation rather than hanging.
+    qWarning() << "ADB process still running after bounded terminate/kill";
 }
 
 bool AdbProcessImpl::isRuning()

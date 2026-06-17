@@ -1,0 +1,21 @@
+name: Apply audio hardening
+on:
+  push:
+    branches: [experimental]
+    paths: [.github/workflows/apply-audio-hardening.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+      - run: python3 .github/scripts/apply_audio_retry_hardening.py
+      - run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add QtScrcpy/audio/audiooutput.cpp
+          git commit -m 'perf(audio): use adaptive single-shot connection retries'
+          git push origin HEAD:experimental

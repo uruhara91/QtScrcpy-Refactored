@@ -29,18 +29,21 @@ QtMsgType covertLogLevel(const QString &logLevel);
 
 int main(int argc, char *argv[])
 {
-    // 1. SETUP PATHS
-    QString appPath = QCoreApplication::applicationDirPath();
+    // QCoreApplication::applicationDirPath() is invalid before QApplication
+    // exists. Resolve argv[0] directly because deployment paths are needed
+    // before Config initializes and before the GUI application is constructed.
+    const QString executable = argc > 0
+        ? QString::fromLocal8Bit(argv[0])
+        : QString();
+    const QString appPath = QFileInfo(executable).absoluteDir().absolutePath();
 
 #ifdef Q_OS_WIN32
-    // Cek folder
     QString adbPath = appPath + "/adb.exe";
     if (!QFile::exists(adbPath)) {
         adbPath = "../../../QtScrcpy/QtScrcpyCore/src/third_party/adb/win/adb.exe";
     }
     qputenv("QTSCRCPY_ADB_PATH", adbPath.toLocal8Bit());
-    
-    // Server logic similar...
+
     QString serverPath = appPath + "/scrcpy-server";
     if (!QFile::exists(serverPath)) {
         serverPath = "../../../QtScrcpy/QtScrcpyCore/src/third_party/scrcpy-server";
@@ -51,8 +54,7 @@ int main(int argc, char *argv[])
 #endif
 
 #ifdef Q_OS_OSX
-    // Mac Bundle Structure handling
-    QString contentsPath = appPath + "/../"; 
+    const QString contentsPath = appPath + "/../";
     qputenv("QTSCRCPY_ADB_PATH", (contentsPath + "MacOS/adb").toLocal8Bit());
     qputenv("QTSCRCPY_SERVER_PATH", (contentsPath + "MacOS/scrcpy-server").toLocal8Bit());
     qputenv("QTSCRCPY_KEYMAP_PATH", (contentsPath + "Resources/keymap").toLocal8Bit());
@@ -60,8 +62,7 @@ int main(int argc, char *argv[])
 #endif
 
 #ifdef Q_OS_LINUX
-    // Linux CMake Deployment (Everything is in bin/)
-    qputenv("QTSCRCPY_ADB_PATH", QString("/usr/bin/adb").toLocal8Bit());
+    qputenv("QTSCRCPY_ADB_PATH", QByteArrayLiteral("/usr/bin/adb"));
     qputenv("QTSCRCPY_SERVER_PATH", (appPath + "/scrcpy-server").toLocal8Bit());
     qputenv("QTSCRCPY_KEYMAP_PATH", (appPath + "/keymap").toLocal8Bit());
     qputenv("QTSCRCPY_CONFIG_PATH", (appPath + "/config").toLocal8Bit());
@@ -69,17 +70,14 @@ int main(int argc, char *argv[])
 
     g_msgType = covertLogLevel(Config::getInstance().getLogLevel());
 
-    // 2. OPENGL CONFIGURATION
     QSurfaceFormat varFormat = QSurfaceFormat::defaultFormat();
     varFormat.setDepthBufferSize(0);
     varFormat.setStencilBufferSize(0);
-    varFormat.setVersion(4, 5); 
+    varFormat.setVersion(4, 5);
     varFormat.setProfile(QSurfaceFormat::CoreProfile);
-    varFormat.setSwapInterval(0); 
-    
+    varFormat.setSwapInterval(0);
     QSurfaceFormat::setDefaultFormat(varFormat);
 
-    // 3. HIGH DPI SCALING
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     #if (QT_VERSION >= QT_VERSION_CHECK(5,14,0))
@@ -87,12 +85,10 @@ int main(int argc, char *argv[])
     #endif
 #endif
 
-    // Setup Logger
     g_oldMessageHandler = qInstallMessageHandler(myMessageOutput);
-    
+
     QApplication a(argc, argv);
 
-    // Linux Icon
 #ifdef Q_OS_LINUX
     QIcon appIcon(":/image/tray/logo.png");
     if (!appIcon.isNull()) {
@@ -100,11 +96,9 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    // Debug Info
     qDebug() << "App Name:" << a.applicationName();
     qDebug() << "App Version:" << a.applicationVersion();
 
-    // Version String Logic
     QStringList versionList = QCoreApplication::applicationVersion().split(".");
     if (versionList.size() >= 3) {
         QString version = versionList[0] + "." + versionList[1] + "." + versionList[2];
@@ -112,16 +106,14 @@ int main(int argc, char *argv[])
     }
 
     installTranslator();
-    
+
 #if defined(Q_OS_WIN32) || defined(Q_OS_OSX)
     MouseTap::getInstance()->initMouseEventTap();
 #endif
 
-    // Load Stylesheet
     QFile file(":/qss/psblack.css");
     if (file.open(QFile::ReadOnly)) {
         QString qss = QLatin1String(file.readAll());
-        // Simple validation to avoid crash if css is broken
         if (qss.length() > 30) {
             QString paletteColor = qss.mid(20, 7);
             qApp->setPalette(QPalette(QColor(paletteColor)));
@@ -130,17 +122,15 @@ int main(int argc, char *argv[])
         file.close();
     }
 
-    // Set ADB Path in Core
     qsc::AdbProcess::setAdbPath(Config::getInstance().getAdbPath());
 
-    // Show Main UI
     g_mainDlg = new Dialog {};
     g_mainDlg->show();
 
     int ret = a.exec();
-    
+
     delete g_mainDlg;
-    g_mainDlg = Q_NULLPTR; // Safety
+    g_mainDlg = Q_NULLPTR;
 
 #if defined(Q_OS_WIN32) || defined(Q_OS_OSX)
     MouseTap::getInstance()->quitMouseEventTap();
@@ -195,17 +185,17 @@ QtMsgType covertLogLevel(const QString &logLevel)
 void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
     QString outputMsg;
-    
+
 #ifdef ENABLE_DETAILED_LOGS
     QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz");
-    
+
     if (context.file && context.line > 0) {
         QString fileName = QString::fromUtf8(context.file);
         int lastSlash = fileName.lastIndexOf('/');
         if (lastSlash >= 0) fileName = fileName.mid(lastSlash + 1);
         lastSlash = fileName.lastIndexOf('\\');
         if (lastSlash >= 0) fileName = fileName.mid(lastSlash + 1);
-        
+
         outputMsg = QString("[ %1 %2: %3 ] %4").arg(timestamp).arg(fileName).arg(context.line).arg(msg);
     } else {
         outputMsg = QString("[%1] %2").arg(timestamp).arg(msg);
@@ -231,7 +221,7 @@ void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QS
     auto getLogRank = [](QtMsgType t) -> int {
         switch (t) {
             case QtDebugMsg: return 0;
-            case QtInfoMsg:  return 1;
+            case QtInfoMsg: return 1;
             case QtWarningMsg: return 2;
             case QtCriticalMsg: return 3;
             case QtFatalMsg: return 4;
@@ -239,15 +229,13 @@ void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QS
         }
     };
 
-    // Integer Rank
     if (getLogRank(g_msgType) <= getLogRank(type)) {
-        // Safety Check
         if (g_mainDlg && g_mainDlg->isVisible() && !g_mainDlg->filterLog(outputMsg)) {
             g_mainDlg->outLog(outputMsg);
         }
     }
 
     if (QtFatalMsg == type) {
-        // abort(); // Optional
+        // abort();
     }
 }

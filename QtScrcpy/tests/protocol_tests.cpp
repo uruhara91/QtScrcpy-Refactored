@@ -58,17 +58,19 @@ void ProtocolTests::setClipboardLayoutUsesUtf8ByteLength()
 {
     const QString text = QStringLiteral("A😀B");
     const QByteArray utf8 = text.toUtf8();
-    QCOMPARE(utf8.size(), 6);
+    QCOMPARE(utf8.size(), static_cast<decltype(utf8.size())>(6));
 
     ControlMsg message(ControlMsg::CMT_SET_CLIPBOARD);
     message.setSetClipboardMsgData(text, true);
     const QByteArray serialized = message.serializeData();
 
-    QCOMPARE(serialized.size(), 14 + utf8.size());
+    QCOMPARE(serialized.size(),
+             static_cast<decltype(serialized.size())>(14) + utf8.size());
     QCOMPARE(static_cast<unsigned char>(serialized.at(0)),
              static_cast<unsigned char>(ControlMsg::CMT_SET_CLIPBOARD));
     QCOMPARE(serialized.mid(1, 8), QByteArray(8, '\0'));
-    QCOMPARE(static_cast<unsigned char>(serialized.at(9)), 1U);
+    QCOMPARE(static_cast<unsigned char>(serialized.at(9)),
+             static_cast<unsigned char>(1));
     QCOMPARE(serialized.mid(10, 4), QByteArray::fromHex("00000006"));
     QCOMPARE(serialized.mid(14), utf8);
 }
@@ -84,7 +86,8 @@ void ProtocolTests::setClipboardPreservesEmbeddedNull()
     const QByteArray serialized = message.serializeData();
 
     QCOMPARE(serialized.mid(10, 4), QByteArray::fromHex("00000003"));
-    QCOMPARE(static_cast<unsigned char>(serialized.at(9)), 0U);
+    QCOMPARE(static_cast<unsigned char>(serialized.at(9)),
+             static_cast<unsigned char>(0));
     QCOMPARE(serialized.mid(14), QByteArray("A\0B", 3));
 }
 
@@ -103,7 +106,8 @@ void ProtocolTests::clipboardTruncationKeepsValidUtf8()
 
     QVERIFY(payload.size() <= CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH);
     QCOMPARE(QString::fromUtf8(payload).toUtf8(), payload);
-    QCOMPARE(payload.size() % 4, 0);
+    QCOMPARE(payload.size() % 4,
+             static_cast<decltype(payload.size())>(0));
 }
 
 void ProtocolTests::deviceMessageSupportsFragmentedInput()
@@ -116,7 +120,8 @@ void ProtocolTests::deviceMessageSupportsFragmentedInput()
     QCOMPARE(message.type(), DeviceMsg::DMT_NULL);
     QCOMPARE(message.deserialize(complete.chopped(1)), 0);
     QCOMPARE(message.type(), DeviceMsg::DMT_NULL);
-    QCOMPARE(message.deserialize(complete), complete.size());
+    QCOMPARE(message.deserialize(complete),
+             static_cast<qint32>(complete.size()));
     QCOMPARE(message.type(), DeviceMsg::DMT_GET_CLIPBOARD);
 
     QString actual;

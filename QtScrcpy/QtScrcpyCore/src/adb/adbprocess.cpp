@@ -15,13 +15,14 @@ AdbProcess::AdbProcess(QObject *parent)
     : QObject(parent)
     , m_adbImpl(new AdbProcessImpl())
 {
-    connect(m_adbImpl, &AdbProcessImpl::adbProcessImplResult, this, &qsc::AdbProcess::adbProcessResult);
+    connect(m_adbImpl, &AdbProcessImpl::adbProcessImplResult,
+            this, &qsc::AdbProcess::adbProcessResult);
 }
 
 AdbProcess::~AdbProcess()
 {
     if (m_adbImpl->isRuning()) {
-        m_adbImpl->kill();
+        m_adbImpl->terminateProcess();
     }
     delete m_adbImpl;
 }
@@ -48,7 +49,7 @@ void AdbProcess::setShowTouchesEnabled(const QString &serial, bool enabled)
 
 void AdbProcess::kill()
 {
-    m_adbImpl->kill();
+    m_adbImpl->terminateProcess();
 }
 
 QStringList AdbProcess::arguments()
@@ -116,4 +117,4 @@ void AdbProcess::removePath(const QString &serial, const QString &path)
     m_adbImpl->removePath(serial, path);
 }
 
-}
+} // namespace qsc

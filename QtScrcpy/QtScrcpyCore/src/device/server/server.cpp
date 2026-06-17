@@ -7,6 +7,7 @@
 #include <QTimerEvent>
 
 #include "server.h"
+#include "qtscrcpytelemetry.h"
 
 #define DEVICE_NAME_FIELD_LENGTH 64
 #define SOCKET_NAME_PREFIX "scrcpy"
@@ -16,6 +17,12 @@
 static quint32 bufferRead32be(quint8 *buf)
 {
     return static_cast<quint32>((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]);
+}
+
+static QString shellQuote(QString value)
+{
+    value.replace(QLatin1Char('\''), QStringLiteral("'\"'\"'"));
+    return QLatin1Char('\'') + value + QLatin1Char('\'');
 }
 
 Server::Server(QObject *parent) : QObject(parent)
@@ -137,8 +144,11 @@ bool Server::execute()
     args << m_params.serverVersion;
 
     args << QString("video_bit_rate=%1").arg(QString::number(m_params.bitRate));
-    if (!m_params.logLevel.isEmpty()) {
-        args << QString("log_level=%1").arg(m_params.logLevel);
+    const QString serverLogLevel = qsc::telemetry::enabled()
+        ? QStringLiteral("debug")
+        : m_params.logLevel;
+    if (!serverLogLevel.isEmpty()) {
+        args << QString("log_level=%1").arg(serverLogLevel);
     }
     if (m_params.maxSize > 0) {
         args << QString("max_size=%1").arg(QString::number(m_params.maxSize));
@@ -220,11 +230,21 @@ bool Server::execute()
     // 这条adb命令是阻塞运行的，m_serverProcess进程不会退出了
     QString cmdObj = args.join(" ");
 
-    QString hybridCmd = QString("su -c '%1' || %1").arg(cmdObj);
+    const bool useRoot = qsc::telemetry::environmentFlag(
+        "QTSCRCPY_SERVER_ROOT", false);
+    const QString serverCommand = useRoot
+        ? QStringLiteral("su -c %1").arg(shellQuote(cmdObj))
+        : cmdObj;
+
+    if (qsc::telemetry::enabled()) {
+        qInfo() << "[Telemetry][Server] launch"
+                << "uidMode=" << (useRoot ? "root" : "shell")
+                << "logLevel=" << serverLogLevel
+                << "thread=" << qsc::telemetry::threadId();
+    }
 
     QStringList finalArgs;
-    finalArgs << "shell";
-    finalArgs << hybridCmd;
+    finalArgs << QStringLiteral("shell") << serverCommand;
 
     m_serverProcess.execute(m_params.serial, finalArgs);
     

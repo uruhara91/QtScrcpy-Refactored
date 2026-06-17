@@ -32,6 +32,8 @@ void VideoSocket::logTelemetry() const
             << "readCalls=" << static_cast<qulonglong>(m_readCalls)
             << "waitCalls=" << static_cast<qulonglong>(m_waitCalls)
             << "waitTimeouts=" << static_cast<qulonglong>(m_waitTimeouts)
+            << "interruptedReads="
+            << static_cast<qulonglong>(m_interruptedReads)
             << "failedReads=" << static_cast<qulonglong>(m_failedReads)
             << "totalWaitMs=" << totalWaitMs
             << "maxWaitMs=" << maxWaitMs
@@ -49,8 +51,11 @@ qint32 VideoSocket::subThreadRecvData(quint8 *buf, qint32 bufSize)
 
     qint32 totalRead = 0;
     while (totalRead < bufSize) {
-        if (m_quit.load(std::memory_order_acquire) ||
-            state() != QAbstractSocket::ConnectedState) {
+        if (m_quit.load(std::memory_order_acquire)) {
+            ++m_interruptedReads;
+            return -1;
+        }
+        if (state() != QAbstractSocket::ConnectedState) {
             ++m_failedReads;
             return -1;
         }
@@ -76,8 +81,11 @@ qint32 VideoSocket::subThreadRecvData(quint8 *buf, qint32 bufSize)
                 // A finite timeout is expected while the peer is idle. Qt may
                 // report SocketTimeoutError here even though the connection is
                 // still healthy, so only quit/state determine termination.
-                if (m_quit.load(std::memory_order_acquire) ||
-                    state() != QAbstractSocket::ConnectedState) {
+                if (m_quit.load(std::memory_order_acquire)) {
+                    ++m_interruptedReads;
+                    return -1;
+                }
+                if (state() != QAbstractSocket::ConnectedState) {
                     ++m_failedReads;
                     return -1;
                 }
@@ -91,6 +99,10 @@ qint32 VideoSocket::subThreadRecvData(quint8 *buf, qint32 bufSize)
             reinterpret_cast<char *>(buf + totalRead), requestSize);
 
         if (chunk <= 0) {
+            if (m_quit.load(std::memory_order_acquire)) {
+                ++m_interruptedReads;
+                return -1;
+            }
             if (chunk < 0 ||
                 state() != QAbstractSocket::ConnectedState) {
                 ++m_failedReads;

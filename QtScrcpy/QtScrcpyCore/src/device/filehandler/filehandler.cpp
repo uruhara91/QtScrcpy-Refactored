@@ -6,29 +6,36 @@ FileHandler::FileHandler(QObject *parent) : QObject(parent)
 
 FileHandler::~FileHandler() {}
 
-void FileHandler::onPushFileRequest(const QString &serial, const QString &file, const QString &devicePath)
+void FileHandler::onPushFileRequest(const QString &serial,
+                                    const QString &file,
+                                    const QString &devicePath)
 {
-    qsc::AdbProcess* adb = new qsc::AdbProcess;
-    bool isApk = false;
-    connect(adb, &qsc::AdbProcess::adbProcessResult, this, [this, adb, isApk](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
-        onAdbProcessResult(adb, isApk, processResult);
+    auto *adb = new qsc::AdbProcess(this);
+    constexpr bool isApk = false;
+    connect(adb, &qsc::AdbProcess::adbProcessResult, adb,
+            [this, adb](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
+        onAdbProcessResult(adb, false, processResult);
     });
 
     adb->push(serial, file, devicePath);
 }
 
-void FileHandler::onInstallApkRequest(const QString &serial, const QString &apkFile)
+void FileHandler::onInstallApkRequest(const QString &serial,
+                                      const QString &apkFile)
 {
-    qsc::AdbProcess* adb = new qsc::AdbProcess;
-    bool isApk = true;
-    connect(adb, &qsc::AdbProcess::adbProcessResult, this, [this, adb, isApk](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
-        onAdbProcessResult(adb, isApk, processResult);
+    auto *adb = new qsc::AdbProcess(this);
+    connect(adb, &qsc::AdbProcess::adbProcessResult, adb,
+            [this, adb](qsc::AdbProcess::ADB_EXEC_RESULT processResult) {
+        onAdbProcessResult(adb, true, processResult);
     });
 
     adb->install(serial, apkFile);
 }
 
-void FileHandler::onAdbProcessResult(qsc::AdbProcess *adb, bool isApk, qsc::AdbProcess::ADB_EXEC_RESULT processResult)
+void FileHandler::onAdbProcessResult(
+    qsc::AdbProcess *adb,
+    bool isApk,
+    qsc::AdbProcess::ADB_EXEC_RESULT processResult)
 {
     switch (processResult) {
     case qsc::AdbProcess::AER_ERROR_START:

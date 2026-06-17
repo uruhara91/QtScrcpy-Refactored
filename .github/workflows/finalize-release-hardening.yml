@@ -1,0 +1,32 @@
+name: Finalize release hardening
+on:
+  push:
+    branches: [experimental]
+    paths: [.github/workflows/finalize-release-hardening.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+      - name: Apply validated source transform
+        run: python3 .github/scripts/finalize_release_hardening.py
+      - name: Remove one-shot staging files
+        run: |
+          rm -f \
+            .github/scripts/apply_server_launch_policy.py \
+            .github/scripts/apply_telemetry_tests_sanitizers.py \
+            .github/scripts/finalize_release_hardening.py \
+            .github/workflows/apply-server-launch-policy.yml \
+            .github/workflows/apply-telemetry-tests-sanitizers.yml \
+            .github/workflows/finalize-release-hardening.yml
+      - name: Commit final source state
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A
+          git commit -m 'hardening(release): close final lifecycle and diagnostics gaps'
+          git push origin HEAD:experimental

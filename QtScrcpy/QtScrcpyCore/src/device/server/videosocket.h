@@ -32,6 +32,7 @@ private:
     std::uint64_t m_readCalls = 0;
     std::uint64_t m_waitCalls = 0;
     std::uint64_t m_waitTimeouts = 0;
+    std::uint64_t m_interruptedReads = 0;
     std::uint64_t m_failedReads = 0;
     qint64 m_totalWaitNanoseconds = 0;
     qint64 m_maxWaitNanoseconds = 0;

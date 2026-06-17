@@ -150,7 +150,7 @@ void Device::screenshot()
 
 void Device::showTouch(bool show)
 {
-    auto *adb = new AdbProcess();
+    auto *adb = new AdbProcess(this);
     connect(adb, &AdbProcess::adbProcessResult, adb,
             [adb](AdbProcess::ADB_EXEC_RESULT result) {
         if (result != AdbProcess::AER_SUCCESS_START) adb->deleteLater();

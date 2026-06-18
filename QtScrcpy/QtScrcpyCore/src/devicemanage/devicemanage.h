@@ -2,6 +2,7 @@
 #define DEVICEMANAGE_H
 
 #include <QMap>
+#include <QSet>
 
 #include "../../include/QtScrcpyCore.h"
 
@@ -30,6 +31,8 @@ private:
 
 private:
     QMap<QString, QPointer<IDevice>> m_devices;
+    QMap<QString, quint16> m_devicePorts;
+    QSet<quint16> m_allocatedPorts;
     quint16 m_localPortStart = 27183;
     QString m_script;
 };

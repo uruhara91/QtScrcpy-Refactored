@@ -90,6 +90,7 @@ private:
     void startConnectTimeoutTimer();
     void stopConnectTimeoutTimer();
     void onConnectTimer();
+    void cleanupOwnedSockets();
 
 private:
     qsc::AdbProcess m_workProcess;

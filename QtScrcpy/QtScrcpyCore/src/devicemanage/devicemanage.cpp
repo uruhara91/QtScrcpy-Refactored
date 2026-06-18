@@ -42,11 +42,21 @@ bool DeviceManage::connectDevice(qsc::DeviceParams params)
     if (m_devices.contains(params.serial)) {
         return false;
     }
-    if (DM_MAX_DEVICES_NUM < m_devices.size()) {
+    if (m_devices.size() >= DM_MAX_DEVICES_NUM) {
         qInfo("over the maximum number of connections");
         return false;
     }
-    
+
+    quint16 localPort = params.localPort;
+    if (localPort == 0 || m_allocatedPorts.contains(localPort)) {
+        localPort = getFreePort();
+    }
+    if (localPort == 0) {
+        qCritical("no free local tunnel port");
+        return false;
+    }
+    params.localPort = localPort;
+
     IDevice *device = new Device(params);
     connect(device, &Device::deviceConnected, this, &DeviceManage::onDeviceConnected);
     connect(device, &Device::deviceDisconnected, this, &DeviceManage::onDeviceDisconnected);
@@ -56,30 +66,32 @@ bool DeviceManage::connectDevice(qsc::DeviceParams params)
         return false;
     }
     m_devices[params.serial] = device;
+    m_devicePorts[params.serial] = localPort;
+    m_allocatedPorts.insert(localPort);
     return true;
 }
 
 bool DeviceManage::disconnectDevice(const QString &serial)
 {
-    bool ret = false;
-    if (!serial.isEmpty() && m_devices.contains(serial)) {
-        auto it = m_devices.find(serial);
-        if (!it.value().isNull()) {
-            delete it.value().data();
-            ret = true;
-        }
-    }
-    return ret;
+    if (serial.isEmpty() || !m_devices.contains(serial)) return false;
+
+    QPointer<IDevice> device = m_devices.take(serial);
+    const quint16 port = m_devicePorts.take(serial);
+    if (port != 0) m_allocatedPorts.remove(port);
+
+    if (!device.isNull()) delete device.data();
+    return true;
 }
 
 void DeviceManage::disconnectAllDevice()
 {
-    QMapIterator<QString, QPointer<IDevice>> i(m_devices);
-    while (i.hasNext()) {
-        i.next();
-        if (!i.value().isNull()) {
-            delete i.value().data();
-        }
+    const auto devices = m_devices;
+    m_devices.clear();
+    m_devicePorts.clear();
+    m_allocatedPorts.clear();
+
+    for (const QPointer<IDevice> &device : devices) {
+        if (!device.isNull()) delete device.data();
     }
 }
 
@@ -99,34 +111,24 @@ void DeviceManage::onDeviceDisconnected(QString serial)
 
 quint16 DeviceManage::getFreePort()
 {
-    quint16 port = m_localPortStart;
-    while (port < m_localPortStart + DM_MAX_DEVICES_NUM) {
-        bool used = false;
-        QMapIterator<QString, QPointer<IDevice>> i(m_devices);
-        while (i.hasNext()) {
-            i.next();
-            auto device = i.value();
-            if (!device.isNull() && device->isReversePort(port)) {
-                used = true;
-                break;
-            }
-        }
-        if (!used) {
-            return port;
-        }
-        port++;
+    const quint32 end = static_cast<quint32>(m_localPortStart) +
+                        static_cast<quint32>(DM_MAX_DEVICES_NUM);
+    for (quint32 candidate = m_localPortStart;
+         candidate < end && candidate <= 65535; ++candidate) {
+        const quint16 port = static_cast<quint16>(candidate);
+        if (!m_allocatedPorts.contains(port)) return port;
     }
     return 0;
 }
 
 void DeviceManage::removeDevice(const QString &serial)
 {
-    if (!serial.isEmpty() && m_devices.contains(serial)) {
-        if (!m_devices[serial].isNull()) {
-            m_devices[serial]->deleteLater();
-        }
-        m_devices.remove(serial);
-    }
+    if (serial.isEmpty()) return;
+
+    QPointer<IDevice> device = m_devices.take(serial);
+    const quint16 port = m_devicePorts.take(serial);
+    if (port != 0) m_allocatedPorts.remove(port);
+    if (!device.isNull()) device->deleteLater();
 }
 
 }

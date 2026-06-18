@@ -16,9 +16,13 @@
 #define MAX_CONNECT_COUNT 30
 #define MAX_RESTART_COUNT 1
 
-static quint32 bufferRead32be(quint8 *buf)
+static quint32 bufferRead32be(const quint8 *buf)
 {
-    return static_cast<quint32>((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]);
+    if (!buf) return 0;
+    return (static_cast<quint32>(buf[0]) << 24) |
+           (static_cast<quint32>(buf[1]) << 16) |
+           (static_cast<quint32>(buf[2]) << 8) |
+           static_cast<quint32>(buf[3]);
 }
 
 static QString shellQuote(QString value)
@@ -59,7 +63,31 @@ Server::Server(QObject *parent) : QObject(parent)
     });
 }
 
-Server::~Server() {}
+Server::~Server()
+{
+    // Device normally calls stop() before destruction, but keep destruction
+    // deterministic for failed/partial startup paths as well. Do not issue new
+    // adb cleanup commands here: child processes are already being destroyed.
+    stopAcceptTimeoutTimer();
+    stopConnectTimeoutTimer();
+    m_serverSocket.close();
+    cleanupOwnedSockets();
+}
+
+void Server::cleanupOwnedSockets()
+{
+    if (m_controlSocket) {
+        m_controlSocket->abort();
+        delete m_controlSocket.data();
+        m_controlSocket = nullptr;
+    }
+    if (m_videoSocket) {
+        m_videoSocket->quit();
+        m_videoSocket->abort();
+        delete m_videoSocket.data();
+        m_videoSocket = nullptr;
+    }
+}
 
 bool Server::pushServer()
 {
@@ -318,28 +346,29 @@ QTcpSocket *Server::getControlSocket()
 
 void Server::stop()
 {
-    if (m_tunnelForward) {
-        stopConnectTimeoutTimer();
-    } else {
-        stopAcceptTimeoutTimer();
-    }
+    // Set the state first so process termination callbacks cannot advance a
+    // partially stopped startup state machine.
+    m_serverStartStep = SSS_NULL;
+    stopAcceptTimeoutTimer();
+    stopConnectTimeoutTimer();
 
-    if (m_controlSocket) {
-        m_controlSocket->close();
-        m_controlSocket->deleteLater();
-    }
-    // ignore failure
-    m_serverProcess.kill();
+    m_serverSocket.close();
+    cleanupOwnedSockets();
+
+    // Both processes may be active during startup fallback/retry.
+    if (m_workProcess.isRuning()) m_workProcess.kill();
+    if (m_serverProcess.isRuning()) m_serverProcess.kill();
+
     if (m_tunnelEnabled) {
         if (m_tunnelForward) {
             disableTunnelForward();
         } else {
             disableTunnelReverse();
         }
-        m_tunnelForward = false;
-        m_tunnelEnabled = false;
     }
-    m_serverSocket.close();
+    m_tunnelForward = false;
+    m_tunnelEnabled = false;
+    m_connectCount = 0;
 }
 
 bool Server::startServerByStep()

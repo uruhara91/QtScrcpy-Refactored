@@ -82,7 +82,7 @@ void Server::cleanupOwnedSockets()
         m_controlSocket = nullptr;
     }
     if (m_videoSocket) {
-        m_videoSocket->quit();
+        m_videoSocket->quitNotify();
         m_videoSocket->abort();
         delete m_videoSocket.data();
         m_videoSocket = nullptr;

@@ -1,0 +1,40 @@
+name: Apply realtime fixes
+
+on:
+  push:
+    branches:
+      - fix/realtime-input-and-codec-options
+    paths:
+      - .github/workflows/apply-realtime-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Apply deterministic source fixes
+        run: python3 .github/scripts/apply_realtime_fixes.py
+
+      - name: Validate generated diff
+        run: |
+          git diff --check
+          git diff --stat
+          test -n "$(git status --porcelain)"
+
+      - name: Commit source changes and remove one-shot files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/scripts/apply_realtime_fixes.py
+          git rm .github/workflows/apply-realtime-fixes.yml
+          git add QtScrcpy
+          git commit -m "Fix realtime input recovery and server codec options"
+          git push origin HEAD:${{ github.ref_name }}

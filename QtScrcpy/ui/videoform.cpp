@@ -1,5 +1,6 @@
 // #include <QDesktopWidget>
 #include <QApplication>
+#include <QCursor>
 #include <QFileInfo>
 #include <QLabel>
 #include <QMessageBox>
@@ -604,33 +605,32 @@ void VideoForm::cancelActiveInputs(const char *reason)
 
 void VideoForm::setPlatformMouseGrab(bool grab)
 {
+    if (!grab && !m_platformMouseGrabActive) return;
+
     const QString platform = QGuiApplication::platformName();
-    const bool isXcb = platform == QLatin1String("xcb");
-    bool qtGrabbed = !grab;
+    const bool isWayland = platform.startsWith(QLatin1String("wayland"));
 
-    // X11 already has an explicit XCB grab in MouseTap. On Wayland and
-    // Windows, use Qt's platform abstraction so compositor/security policy is
-    // respected; Windows additionally keeps ClipCursor for confinement.
-    if (!isXcb) {
-        if (QWindow *nativeWindow = windowHandle()) {
-            qtGrabbed = nativeWindow->setMouseGrabEnabled(grab);
-        } else if (!grab) {
-            qtGrabbed = true;
-        }
-    } else {
-        qtGrabbed = true;
-    }
-
+    // Keep the proven platform-native paths: ClipCursor on Windows and XCB
+    // pointer grab on X11. Qt's QWindow mouse grab is intentionally not used:
+    // the Wayland plugin rejects it for normal top-level windows and it also
+    // duplicates the native Windows confinement path.
     MouseTap::getInstance()->enableMouseEventTap(getGrabCursorRect(), grab);
-    m_platformMouseGrabActive = grab && qtGrabbed;
+    m_platformMouseGrabActive = grab;
 
-    if (grab && !qtGrabbed) {
-        qWarning() << "Mouse grab was rejected by platform:" << platform;
+    // Native Wayland has no grab implementation in MouseTap. The existing
+    // game-input path confines the pointer by periodically warping it back to
+    // the video center, so seed that state immediately when custom mode starts.
+    if (grab && m_videoWidget) {
+        const QPoint center = m_videoWidget->mapToGlobal(
+            m_videoWidget->rect().center());
+        QCursor::setPos(center);
     }
+
     if (qsc::telemetry::enabled()) {
         qInfo() << "[Telemetry][Input] mouse-grab"
                 << "requested=" << grab
                 << "active=" << m_platformMouseGrabActive
+                << "strategy=" << (isWayland ? "recenter" : "native")
                 << "platform=" << platform;
     }
 }

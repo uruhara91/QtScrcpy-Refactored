@@ -852,11 +852,9 @@ bool InputConvertGame::moveCursorTo(const QMouseEvent *from,
 {
     if (!from) return false;
 
-    // Native Wayland intentionally forbids global pointer warping. Rely on
-    // QWindow mouse grab/pointer constraints instead of fighting the compositor.
-    if (QGuiApplication::platformName().startsWith(QLatin1String("wayland"))) {
-        return false;
-    }
+    // QWindow mouse grabbing is unavailable for normal Wayland windows in
+    // Qt 5.15. Keep the historical cursor-warp fallback; compositors that
+    // support Qt cursor positioning will confine the FPS camera as before.
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     QPoint offset = from->pos() - localPosPixel;
     QPoint global = from->globalPos();

@@ -21,6 +21,10 @@ VideoSocket::~VideoSocket()
 void VideoSocket::logTelemetry() const
 {
     if (!m_telemetryEnabled) return;
+    if (m_totalBytesRead == 0 && m_readCalls == 0 && m_waitCalls == 0 &&
+        m_interruptedReads == 0 && m_failedReads == 0) {
+        return;
+    }
 
     const double totalWaitMs =
         static_cast<double>(m_totalWaitNanoseconds) / 1'000'000.0;

@@ -1,6 +1,7 @@
 #ifndef SERVER_H
 #define SERVER_H
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QPointer>
 #include <QSize>
@@ -104,6 +105,7 @@ private:
     int m_connectTimeoutTimer = 0;
     quint32 m_connectCount = 0;
     quint32 m_restartCount = 0;
+    QElapsedTimer m_forwardConnectElapsed;
     QString m_deviceName = "";
     QSize m_deviceSize = QSize();
     ServerParams m_params;

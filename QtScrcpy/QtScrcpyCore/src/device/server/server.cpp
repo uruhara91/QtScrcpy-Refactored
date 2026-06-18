@@ -7,14 +7,18 @@
 #include <QTimerEvent>
 #include <array>
 #include <algorithm>
+#include <memory>
 
 #include "server.h"
 #include "qtscrcpytelemetry.h"
 
 #define DEVICE_NAME_FIELD_LENGTH 64
 #define SOCKET_NAME_PREFIX "scrcpy"
-#define MAX_CONNECT_COUNT 30
+#define MAX_CONNECT_COUNT 100
 #define MAX_RESTART_COUNT 1
+#define CONNECT_RETRY_INTERVAL_MS 100
+#define CONNECT_PROBE_TIMEOUT_MS 300
+#define CONNECT_TOTAL_TIMEOUT_MS 10000
 
 static quint32 bufferRead32be(const quint8 *buf)
 {
@@ -466,7 +470,16 @@ void Server::stopAcceptTimeoutTimer()
 void Server::startConnectTimeoutTimer()
 {
     stopConnectTimeoutTimer();
-    m_connectTimeoutTimer = startTimer(300);
+    m_forwardConnectElapsed.start();
+    m_connectTimeoutTimer = startTimer(
+        CONNECT_RETRY_INTERVAL_MS, Qt::PreciseTimer);
+    // Do not add a full retry interval before the first probe.
+    QTimer::singleShot(0, this, [this]() {
+        if (m_connectTimeoutTimer && m_tunnelForward &&
+            m_serverStartStep == SSS_RUNNING) {
+            onConnectTimer();
+        }
+    });
 }
 
 void Server::stopConnectTimeoutTimer()
@@ -476,82 +489,38 @@ void Server::stopConnectTimeoutTimer()
         m_connectTimeoutTimer = 0;
     }
     m_connectCount = 0;
+    m_forwardConnectElapsed.invalidate();
 }
 
 void Server::onConnectTimer()
 {
-    // device server need time to start
-    // 这里连接太早时间不够导致安卓监听socket还没有建立，readInfo会失败，所以采取定时重试策略
-    // 每隔100ms尝试一次，最多尝试MAX_CONNECT_COUNT次
-    QString deviceName;
-    QSize deviceSize;
-    bool success = false;
-
-    VideoSocket *videoSocket = new VideoSocket();
-    QTcpSocket *controlSocket = new QTcpSocket();
-
-    videoSocket->connectToHost(QHostAddress::LocalHost, m_params.localPort);
-    videoSocket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
-    videoSocket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
-    if (!videoSocket->waitForConnected(1000)) {
-        // 连接到adb很快的，这里失败不重试
-        m_connectCount = MAX_CONNECT_COUNT;
-        qWarning("video socket connect to server failed");
-        goto result;
-    }
-
-    controlSocket->connectToHost(QHostAddress::LocalHost, m_params.localPort);
-    controlSocket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
-    controlSocket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
-    if (!controlSocket->waitForConnected(1000)) {
-        // 连接到adb很快的，这里失败不重试
-        m_connectCount = MAX_CONNECT_COUNT;
-        qWarning("control socket connect to server failed");
-        goto result;
-    }
-
-    if (QTcpSocket::ConnectedState == videoSocket->state()) {
-        // connect will success even if devices offline, recv data is real connect success
-        // because connect is to pc adb server
-        videoSocket->waitForReadyRead(1000);
-        // devices will send 1 byte first on tunnel forward mode
-        QByteArray data = videoSocket->read(1);
-        if (!data.isEmpty() && readInfo(videoSocket, deviceName, deviceSize)) {
-            success = true;
-            goto result;
-        } else {
-            qWarning("video socket connect to server read device info failed, try again");
-            goto result;
-        }
-    } else {
-        qWarning("connect to server failed");
-        m_connectCount = MAX_CONNECT_COUNT;
-        goto result;
-    }
-
-result:
-    if (success) {
+    if (!m_tunnelForward || m_serverStartStep != SSS_RUNNING) {
         stopConnectTimeoutTimer();
-        m_videoSocket = videoSocket;
-        // devices will send 1 byte first on tunnel forward mode
-        controlSocket->read(1);
-        m_controlSocket = controlSocket;
-        // we don't need the adb tunnel anymore
-        disableTunnelForward();
-        m_tunnelEnabled = false;
-        m_restartCount = 0;
-        emit serverStarted(success, deviceName, deviceSize);
         return;
     }
 
-    if (videoSocket) {
-        videoSocket->deleteLater();
-    }
-    if (controlSocket) {
-        controlSocket->deleteLater();
-    }
+    const quint32 attempt = ++m_connectCount;
+    const qint64 elapsedMs = m_forwardConnectElapsed.isValid()
+        ? m_forwardConnectElapsed.elapsed()
+        : 0;
 
-    if (MAX_CONNECT_COUNT <= m_connectCount++) {
+    auto failAttempt = [this, attempt, elapsedMs](const char *stage) {
+        if (qsc::telemetry::enabled() &&
+            (attempt == 1 || attempt % 10 == 0)) {
+            qInfo() << "[Telemetry][Server] forward-probe"
+                    << "attempt=" << attempt
+                    << "elapsedMs=" << elapsedMs
+                    << "stage=" << stage;
+        }
+
+        const bool exhausted = attempt >= MAX_CONNECT_COUNT ||
+                               elapsedMs >= CONNECT_TOTAL_TIMEOUT_MS;
+        if (!exhausted) return;
+
+        qWarning() << "forward tunnel handshake timed out"
+                   << "attempts=" << attempt
+                   << "elapsedMs=" << elapsedMs
+                   << "stage=" << stage;
         stopConnectTimeoutTimer();
         stop();
         if (MAX_RESTART_COUNT > m_restartCount++) {
@@ -561,7 +530,70 @@ result:
             m_restartCount = 0;
             emit serverStarted(false);
         }
+    };
+
+    // Match upstream scrcpy's forward handshake: connect only the first
+    // (video) socket and wait for the server dummy byte. Opening the control
+    // socket before this probe succeeds creates needless stale connections
+    // while app_process is still starting on slower Android versions.
+    auto videoSocket = std::make_unique<VideoSocket>();
+    videoSocket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+    videoSocket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
+    videoSocket->connectToHost(QHostAddress::LocalHost, m_params.localPort);
+
+    if (!videoSocket->waitForConnected(CONNECT_PROBE_TIMEOUT_MS)) {
+        failAttempt("video-connect");
+        return;
     }
+
+    if (videoSocket->bytesAvailable() < 1 &&
+        !videoSocket->waitForReadyRead(CONNECT_PROBE_TIMEOUT_MS)) {
+        failAttempt("dummy-byte");
+        return;
+    }
+
+    const QByteArray dummy = videoSocket->read(1);
+    if (dummy.size() != 1) {
+        failAttempt("dummy-byte");
+        return;
+    }
+
+    // The Android server accepts sockets in video -> control order. Once the
+    // video dummy byte arrives, it is already blocked waiting for control.
+    auto controlSocket = std::make_unique<QTcpSocket>();
+    controlSocket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+    controlSocket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
+    controlSocket->connectToHost(QHostAddress::LocalHost, m_params.localPort);
+    if (!controlSocket->waitForConnected(1000)) {
+        failAttempt("control-connect");
+        return;
+    }
+
+    QString deviceName;
+    QSize deviceSize;
+    if (!readInfo(videoSocket.get(), deviceName, deviceSize)) {
+        failAttempt("device-info");
+        return;
+    }
+
+    const qint64 connectedMs = m_forwardConnectElapsed.isValid()
+        ? m_forwardConnectElapsed.elapsed()
+        : elapsedMs;
+    stopConnectTimeoutTimer();
+    m_videoSocket = videoSocket.release();
+    m_controlSocket = controlSocket.release();
+
+    // The established sockets remain valid after removing the adb rule.
+    disableTunnelForward();
+    m_tunnelEnabled = false;
+    m_restartCount = 0;
+
+    if (qsc::telemetry::enabled()) {
+        qInfo() << "[Telemetry][Server] forward-connected"
+                << "attempts=" << attempt
+                << "elapsedMs=" << connectedMs;
+    }
+    emit serverStarted(true, deviceName, deviceSize);
 }
 
 void Server::onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult)

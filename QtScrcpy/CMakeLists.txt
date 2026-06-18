@@ -303,6 +303,11 @@ endif()
 
 add_executable(${PROJECT_NAME} ${QC_RUNTIME_TYPE} ${QC_PROJECT_SOURCES})
 
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    QTSCRCPY_VERSION="${PROJECT_VERSION}"
+    QTSCRCPY_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+)
+
 # Log compile definitions
 if(ENABLE_DETAILED_LOGS)
     target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_DETAILED_LOGS)

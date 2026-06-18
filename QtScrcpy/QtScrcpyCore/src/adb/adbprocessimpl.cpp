@@ -30,8 +30,10 @@ const QString &AdbProcessImpl::getAdbPath()
 {
     if (s_adbPath.isEmpty()) {
         QStringList potentialPaths;
-        potentialPaths << QString::fromLocal8Bit(qgetenv("QTSCRCPY_ADB_PATH"))
-                       << g_adbPath;
+        // Explicit config wins; the environment value is the deployment
+        // fallback installed by main.cpp.
+        potentialPaths << g_adbPath
+                       << QString::fromLocal8Bit(qgetenv("QTSCRCPY_ADB_PATH"));
 
         if (QCoreApplication::instance()) {
 #ifdef Q_OS_WIN32

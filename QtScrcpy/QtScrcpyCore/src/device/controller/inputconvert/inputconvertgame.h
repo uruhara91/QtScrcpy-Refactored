@@ -57,7 +57,7 @@ private:
     int getTouchID(int key) const;
     int activeTouchCount() const;
     void recoverDuplicateTouch(int key, const char *reason);
-    void reconcileMouseButtons(Qt::MouseButtons buttons);
+    void reconcileMouseButtons(Qt::MouseButtons buttons, const char *reason);
     void updateMouseButtonWatchdog();
 
     void processSteerWheel(const KeyMap::KeyMapNode &node, const QKeyEvent *from);
@@ -144,6 +144,7 @@ private:
     QHash<int, QPointF> m_keyJitterMap;
     QSet<int> m_activeMouseButtons;
     QTimer m_mouseButtonWatchdog;
+    bool m_globalMouseButtonsReliable = true;
 };
 
 #endif // INPUTCONVERTGAME_H

@@ -238,6 +238,15 @@ bool Server::execute()
     if (qsc::telemetry::enabled()) {
         qInfo() << "[Telemetry][Server] launch"
                 << "uidMode=" << (useRoot ? "root" : "shell")
+                << "version=" << m_params.serverVersion
+                << "maxSize=" << m_params.maxSize
+                << "maxFps=" << m_params.maxFps
+                << "bitRate=" << m_params.bitRate
+                << "codecOptions=" << m_params.codecOptions
+                << "encoder=" << (m_params.codecName.isEmpty()
+                                       ? QStringLiteral("auto")
+                                       : m_params.codecName)
+                << "tunnel=" << (m_tunnelForward ? "forward" : "reverse")
                 << "logLevel=" << serverLogLevel
                 << "thread=" << qsc::telemetry::threadId();
     }

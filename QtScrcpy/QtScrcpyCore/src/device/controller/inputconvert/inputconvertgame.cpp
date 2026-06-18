@@ -38,10 +38,14 @@ InputConvertGame::InputConvertGame(Controller *controller)
     // This timer is only active while a physical mouse button is held. It
     // recovers a release event lost by the compositor, USB stack, or a focus
     // transition without adding latency to the normal event path.
+    m_globalMouseButtonsReliable =
+        !QGuiApplication::platformName().startsWith(QLatin1String("wayland"));
     m_mouseButtonWatchdog.setInterval(100);
     m_mouseButtonWatchdog.setTimerType(Qt::CoarseTimer);
     connect(&m_mouseButtonWatchdog, &QTimer::timeout, this, [this]() {
-        reconcileMouseButtons(QGuiApplication::mouseButtons());
+        if (!m_globalMouseButtonsReliable) return;
+        reconcileMouseButtons(QGuiApplication::mouseButtons(),
+                              "global-button-state");
     });
 }
 
@@ -355,7 +359,8 @@ void InputConvertGame::recoverDuplicateTouch(int key, const char *reason)
     updateMouseButtonWatchdog();
 }
 
-void InputConvertGame::reconcileMouseButtons(Qt::MouseButtons buttons)
+void InputConvertGame::reconcileMouseButtons(Qt::MouseButtons buttons,
+                                             const char *reason)
 {
     const QList<int> activeButtons = m_activeMouseButtons.values();
     for (int key : activeButtons) {
@@ -371,7 +376,7 @@ void InputConvertGame::reconcileMouseButtons(Qt::MouseButtons buttons)
 
         if (qsc::telemetry::enabled()) {
             qInfo() << "[Telemetry][Input] forced-release"
-                    << "reason=host-button-state"
+                    << "reason=" << (reason ? reason : "button-state")
                     << "button=" << key
                     << "activeTouches=" << activeTouchCount();
         }
@@ -381,7 +386,7 @@ void InputConvertGame::reconcileMouseButtons(Qt::MouseButtons buttons)
 
 void InputConvertGame::updateMouseButtonWatchdog()
 {
-    if (m_activeMouseButtons.isEmpty()) {
+    if (!m_globalMouseButtonsReliable || m_activeMouseButtons.isEmpty()) {
         m_mouseButtonWatchdog.stop();
     } else if (!m_mouseButtonWatchdog.isActive()) {
         m_mouseButtonWatchdog.start();
@@ -771,7 +776,7 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
         return false;
     }
 
-    reconcileMouseButtons(from->buttons());
+    reconcileMouseButtons(from->buttons(), "event-button-state");
 
     const QPoint center(m_showSize.width() / 2, m_showSize.height() / 2);
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)

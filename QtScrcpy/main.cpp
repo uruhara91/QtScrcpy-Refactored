@@ -1,4 +1,4 @@
-﻿#include <QApplication>
+#include <QApplication>
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -11,13 +11,22 @@
 #include <QTranslator>
 #include <QDateTime>
 #include <QStandardPaths>
+#include <QSysInfo>
 #include <QDir>
 
 #include "config.h"
 #include "dialog.h"
 #include "mousetap/mousetap.h"
 #include "adbprocess.h"
+#include "qtscrcpytelemetry.h"
 #include <mimalloc-new-delete.h>
+
+#ifndef QTSCRCPY_VERSION
+#define QTSCRCPY_VERSION "0.0.0"
+#endif
+#ifndef QTSCRCPY_BUILD_TYPE
+#define QTSCRCPY_BUILD_TYPE "unknown"
+#endif
 
 static Dialog *g_mainDlg = Q_NULLPTR;
 static QtMessageHandler g_oldMessageHandler = Q_NULLPTR;
@@ -29,6 +38,9 @@ QtMsgType covertLogLevel(const QString &logLevel);
 
 int main(int argc, char *argv[])
 {
+    QCoreApplication::setApplicationName(QStringLiteral("QtScrcpy"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(QTSCRCPY_VERSION));
+
     // QCoreApplication::applicationDirPath() is invalid before QApplication
     // exists. Resolve argv[0] directly because deployment paths are needed
     // before Config initializes and before the GUI application is constructed.
@@ -98,11 +110,13 @@ int main(int argc, char *argv[])
 
     qDebug() << "App Name:" << a.applicationName();
     qDebug() << "App Version:" << a.applicationVersion();
-
-    QStringList versionList = QCoreApplication::applicationVersion().split(".");
-    if (versionList.size() >= 3) {
-        QString version = versionList[0] + "." + versionList[1] + "." + versionList[2];
-        a.setApplicationVersion(version);
+    if (qsc::telemetry::enabled()) {
+        qInfo() << "[Telemetry][Runtime]"
+                << "version=" << a.applicationVersion()
+                << "buildType=" << QTSCRCPY_BUILD_TYPE
+                << "qt=" << qVersion()
+                << "platform=" << QGuiApplication::platformName()
+                << "arch=" << QSysInfo::currentCpuArchitecture();
     }
 
     installTranslator();
@@ -170,7 +184,7 @@ void installTranslator()
 
 QtMsgType covertLogLevel(const QString &logLevel)
 {
-    if ("debug" == logLevel) return QtDebugMsg;
+    if ("verbose" == logLevel || "debug" == logLevel) return QtDebugMsg;
     if ("info" == logLevel) return QtInfoMsg;
     if ("warn" == logLevel) return QtWarningMsg;
     if ("error" == logLevel) return QtCriticalMsg;

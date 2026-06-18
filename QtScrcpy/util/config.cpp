@@ -1,7 +1,8 @@
-﻿#include <QCoreApplication>
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QSettings>
 #include <QDebug>
+#include <QSet>
 
 #include "config.h"
 #ifdef Q_OS_OSX
@@ -60,14 +61,16 @@
 #define COMMON_RECORD_FORMAT_INDEX_KEY "RecordFormatIndex"
 #define COMMON_RECORD_FORMAT_INDEX_DEF 0
 
-#define COMMON_LOCK_ORIENTATION_INDEX_KEY "LockDirectionIndex"
+#define COMMON_LOCK_ORIENTATION_INDEX_KEY "LockOrientationIndex"
+#define COMMON_LOCK_ORIENTATION_INDEX_LEGACY_KEY "LockDirectionIndex"
 #define COMMON_LOCK_ORIENTATION_INDEX_DEF 0
 
 #define COMMON_RECORD_SCREEN_KEY "RecordScreen"
 #define COMMON_RECORD_SCREEN_DEF false
 
-#define COMMON_RECORD_BACKGROUD_KEY "RecordBackGround"
-#define COMMON_RECORD_BACKGROUD_DEF false
+#define COMMON_RECORD_BACKGROUND_KEY "RecordBackground"
+#define COMMON_RECORD_BACKGROUND_LEGACY_KEY "RecordBackGround"
+#define COMMON_RECORD_BACKGROUND_DEF false
 
 #define COMMON_REVERSE_CONNECT_KEY "ReverseConnect"
 #define COMMON_REVERSE_CONNECT_DEF true
@@ -96,7 +99,8 @@
 #define COMMON_TRAY_MESSAGE_SHOWN_KEY "TrayMessageShown"
 #define COMMON_TRAY_MESSAGE_SHOWN_DEF false
 
-#define COMMON_SHOW_TOOLBAR_KEY "showToolbar"
+#define COMMON_SHOW_TOOLBAR_KEY "ShowToolbar"
+#define COMMON_SHOW_TOOLBAR_LEGACY_KEY "showToolbar"
 #define COMMON_SHOW_TOOLBAR_DEF true
 
 // device config
@@ -119,6 +123,26 @@
 #define PORT_HISTORY_MAX 10
 
 QString Config::s_configPath = "";
+
+namespace {
+QVariant readMigratedValue(QSettings *settings,
+                           const char *key,
+                           const char *legacyKey,
+                           const QVariant &fallback)
+{
+    if (!settings || !key) return fallback;
+    if (settings->contains(QLatin1String(key))) {
+        return settings->value(QLatin1String(key), fallback);
+    }
+    if (legacyKey && settings->contains(QLatin1String(legacyKey))) {
+        const QVariant value = settings->value(QLatin1String(legacyKey), fallback);
+        settings->setValue(QLatin1String(key), value);
+        settings->remove(QLatin1String(legacyKey));
+        return value;
+    }
+    return fallback;
+}
+}
 
 Config::Config(QObject *parent) : QObject(parent)
 {
@@ -169,7 +193,7 @@ void Config::setUserBootConfig(const UserBootConfig &config)
     m_userData->setValue(COMMON_FRAMELESS_WINDOW_KEY, config.framelessWindow);
     m_userData->setValue(COMMON_LOCK_ORIENTATION_INDEX_KEY, config.lockOrientationIndex);
     m_userData->setValue(COMMON_RECORD_SCREEN_KEY, config.recordScreen);
-    m_userData->setValue(COMMON_RECORD_BACKGROUD_KEY, config.recordBackground);
+    m_userData->setValue(COMMON_RECORD_BACKGROUND_KEY, config.recordBackground);
     m_userData->setValue(COMMON_REVERSE_CONNECT_KEY, config.reverseConnect);
     m_userData->setValue(COMMON_SHOW_FPS_KEY, config.showFPS);
     m_userData->setValue(COMMON_WINDOW_ON_TOP_KEY, config.windowOnTop);
@@ -190,10 +214,16 @@ UserBootConfig Config::getUserBootConfig()
     config.bitRate = m_userData->value(COMMON_BITRATE_KEY, COMMON_BITRATE_DEF).toUInt();
     config.maxSizeIndex = m_userData->value(COMMON_MAX_SIZE_INDEX_KEY, COMMON_MAX_SIZE_INDEX_DEF).toInt();
     config.recordFormatIndex = m_userData->value(COMMON_RECORD_FORMAT_INDEX_KEY, COMMON_RECORD_FORMAT_INDEX_DEF).toInt();
-    config.lockOrientationIndex = m_userData->value(COMMON_LOCK_ORIENTATION_INDEX_KEY, COMMON_LOCK_ORIENTATION_INDEX_DEF).toInt();
+    config.lockOrientationIndex = readMigratedValue(
+        m_userData, COMMON_LOCK_ORIENTATION_INDEX_KEY,
+        COMMON_LOCK_ORIENTATION_INDEX_LEGACY_KEY,
+        COMMON_LOCK_ORIENTATION_INDEX_DEF).toInt();
     config.framelessWindow = m_userData->value(COMMON_FRAMELESS_WINDOW_KEY, COMMON_FRAMELESS_WINDOW_DEF).toBool();
     config.recordScreen = m_userData->value(COMMON_RECORD_SCREEN_KEY, COMMON_RECORD_SCREEN_DEF).toBool();
-    config.recordBackground = m_userData->value(COMMON_RECORD_BACKGROUD_KEY, COMMON_RECORD_BACKGROUD_DEF).toBool();
+    config.recordBackground = readMigratedValue(
+        m_userData, COMMON_RECORD_BACKGROUND_KEY,
+        COMMON_RECORD_BACKGROUND_LEGACY_KEY,
+        COMMON_RECORD_BACKGROUND_DEF).toBool();
     config.reverseConnect = m_userData->value(COMMON_REVERSE_CONNECT_KEY, COMMON_REVERSE_CONNECT_DEF).toBool();
     config.showFPS = m_userData->value(COMMON_SHOW_FPS_KEY, COMMON_SHOW_FPS_DEF).toBool();
     config.windowOnTop = m_userData->value(COMMON_WINDOW_ON_TOP_KEY, COMMON_WINDOW_ON_TOP_DEF).toBool();
@@ -201,8 +231,12 @@ UserBootConfig Config::getUserBootConfig()
     config.keepAlive = m_userData->value(COMMON_KEEP_ALIVE_KEY, COMMON_KEEP_ALIVE_DEF).toBool();
     config.simpleMode = m_userData->value(COMMON_SIMPLE_MODE_KEY, COMMON_SIMPLE_MODE_DEF).toBool();
     config.autoUpdateDevice = m_userData->value(COMMON_AUTO_UPDATE_DEVICE_KEY, COMMON_AUTO_UPDATE_DEVICE_DEF).toBool();
-    config.showToolbar =m_userData->value(COMMON_SHOW_TOOLBAR_KEY,COMMON_SHOW_TOOLBAR_DEF).toBool();
+    config.showToolbar = readMigratedValue(
+        m_userData, COMMON_SHOW_TOOLBAR_KEY,
+        COMMON_SHOW_TOOLBAR_LEGACY_KEY,
+        COMMON_SHOW_TOOLBAR_DEF).toBool();
     m_userData->endGroup();
+    m_userData->sync();
     return config;
 }
 
@@ -265,11 +299,11 @@ QString Config::getNickName(const QString &serial)
 
 int Config::getMaxFps()
 {
-    int fps = 0;
     m_settings->beginGroup(GROUP_COMMON);
-    fps = m_settings->value(COMMON_MAX_FPS_KEY, COMMON_MAX_FPS_DEF).toInt();
+    const int fps = m_settings->value(
+        COMMON_MAX_FPS_KEY, COMMON_MAX_FPS_DEF).toInt();
     m_settings->endGroup();
-    return fps;
+    return qBound(0, fps, 240);
 }
 
 int Config::getDesktopOpenGL()
@@ -283,13 +317,8 @@ int Config::getDesktopOpenGL()
 
 int Config::getSkin()
 {
-    // force disable skin
+    // Skin is intentionally disabled by the current UI implementation.
     return 0;
-    int skin = 1;
-    m_settings->beginGroup(GROUP_COMMON);
-    skin = m_settings->value(COMMON_SKIN_KEY, COMMON_SKIN_DEF).toInt();
-    m_settings->endGroup();
-    return skin;
 }
 
 int Config::getRenderExpiredFrames()
@@ -305,8 +334,11 @@ QString Config::getPushFilePath()
 {
     QString pushFile;
     m_settings->beginGroup(GROUP_COMMON);
-    pushFile = m_settings->value(COMMON_PUSHFILE_KEY, COMMON_PUSHFILE_DEF).toString();
+    pushFile = m_settings->value(
+        COMMON_PUSHFILE_KEY, COMMON_PUSHFILE_DEF).toString().trimmed();
     m_settings->endGroup();
+    if (pushFile.isEmpty()) pushFile = QStringLiteral(COMMON_PUSHFILE_DEF);
+    if (!pushFile.endsWith(QLatin1Char('/'))) pushFile += QLatin1Char('/');
     return pushFile;
 }
 
@@ -314,16 +346,19 @@ QString Config::getServerPath()
 {
     QString serverPath;
     m_settings->beginGroup(GROUP_COMMON);
-    serverPath = m_settings->value(COMMON_SERVER_PATH_KEY, COMMON_SERVER_PATH_DEF).toString();
+    serverPath = m_settings->value(
+        COMMON_SERVER_PATH_KEY, COMMON_SERVER_PATH_DEF).toString().trimmed();
     m_settings->endGroup();
-    return serverPath;
+    return serverPath.isEmpty() ? QStringLiteral(COMMON_SERVER_PATH_DEF)
+                                : serverPath;
 }
 
 QString Config::getAdbPath()
 {
     QString adbPath;
     m_settings->beginGroup(GROUP_COMMON);
-    adbPath = m_settings->value(COMMON_ADB_PATH_KEY, COMMON_ADB_PATH_DEF).toString();
+    adbPath = m_settings->value(
+        COMMON_ADB_PATH_KEY, COMMON_ADB_PATH_DEF).toString().trimmed();
     m_settings->endGroup();
     return adbPath;
 }
@@ -332,16 +367,23 @@ QString Config::getLogLevel()
 {
     QString logLevel;
     m_settings->beginGroup(GROUP_COMMON);
-    logLevel = m_settings->value(COMMON_LOG_LEVEL_KEY, COMMON_LOG_LEVEL_DEF).toString();
+    logLevel = m_settings->value(
+        COMMON_LOG_LEVEL_KEY, COMMON_LOG_LEVEL_DEF).toString().trimmed().toLower();
     m_settings->endGroup();
-    return logLevel;
+    static const QSet<QString> levels{
+        QStringLiteral("verbose"), QStringLiteral("debug"),
+        QStringLiteral("info"), QStringLiteral("warn"),
+        QStringLiteral("error")};
+    return levels.contains(logLevel) ? logLevel
+                                     : QStringLiteral(COMMON_LOG_LEVEL_DEF);
 }
 
 QString Config::getCodecOptions()
 {
     QString codecOptions;
     m_settings->beginGroup(GROUP_COMMON);
-    codecOptions = m_settings->value(COMMON_CODEC_OPTIONS_KEY, COMMON_CODEC_OPTIONS_DEF).toString();
+    codecOptions = m_settings->value(
+        COMMON_CODEC_OPTIONS_KEY, COMMON_CODEC_OPTIONS_DEF).toString().trimmed();
     m_settings->endGroup();
     return codecOptions;
 }
@@ -350,7 +392,8 @@ QString Config::getCodecName()
 {
     QString codecName;
     m_settings->beginGroup(GROUP_COMMON);
-    codecName = m_settings->value(COMMON_CODEC_NAME_KEY, COMMON_CODEC_NAME_DEF).toString();
+    codecName = m_settings->value(
+        COMMON_CODEC_NAME_KEY, COMMON_CODEC_NAME_DEF).toString().trimmed();
     m_settings->endGroup();
     return codecName;
 }

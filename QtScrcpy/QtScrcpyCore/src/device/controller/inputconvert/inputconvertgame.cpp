@@ -1,5 +1,6 @@
 #include "inputconvertgame.h"
 #include "../controller.h"
+#include "qtscrcpytelemetry.h"
 
 #include <QCursor>
 #include <QDebug>
@@ -33,6 +34,15 @@ InputConvertGame::InputConvertGame(Controller *controller)
     m_dragDelayData.timer->setSingleShot(true);
     connect(m_dragDelayData.timer, &QTimer::timeout,
             this, &InputConvertGame::onDragTimer);
+
+    // This timer is only active while a physical mouse button is held. It
+    // recovers a release event lost by the compositor, USB stack, or a focus
+    // transition without adding latency to the normal event path.
+    m_mouseButtonWatchdog.setInterval(100);
+    m_mouseButtonWatchdog.setTimerType(Qt::CoarseTimer);
+    connect(&m_mouseButtonWatchdog, &QTimer::timeout, this, [this]() {
+        reconcileMouseButtons(QGuiApplication::mouseButtons());
+    });
 }
 
 InputConvertGame::~InputConvertGame()
@@ -167,6 +177,17 @@ void InputConvertGame::keyEvent(const QKeyEvent *from,
 bool InputConvertGame::isCurrentCustomKeymap()
 {
     return m_gameMap;
+}
+
+void InputConvertGame::cancelActiveInputs()
+{
+    const int activeTouches = activeTouchCount();
+    if (qsc::telemetry::enabled() && activeTouches > 0) {
+        qInfo() << "[Telemetry][Input] cancel-active-inputs"
+                << "activeTouches=" << activeTouches
+                << "mouseButtons=" << m_activeMouseButtons.size();
+    }
+    releaseAllKeys();
 }
 
 void InputConvertGame::loadKeyMap(const QString &json)
@@ -308,6 +329,65 @@ int InputConvertGame::getTouchID(int key) const
     return -1;
 }
 
+int InputConvertGame::activeTouchCount() const
+{
+    return static_cast<int>(std::count_if(
+        m_multiTouchID.cbegin(), m_multiTouchID.cend(),
+        [](int key) { return key != 0; }));
+}
+
+void InputConvertGame::recoverDuplicateTouch(int key, const char *reason)
+{
+    const int id = getTouchID(key);
+    if (id < 0) return;
+
+    const QPointF lastPosition = m_touchPositions[id];
+    (void)sendTouchUpEvent(id, lastPosition);
+    detachTouchIDByIndex(id);
+    m_activeMouseButtons.remove(key);
+
+    if (qsc::telemetry::enabled()) {
+        qInfo() << "[Telemetry][Input] forced-release"
+                << "reason=" << reason
+                << "key=" << key
+                << "activeTouches=" << activeTouchCount();
+    }
+    updateMouseButtonWatchdog();
+}
+
+void InputConvertGame::reconcileMouseButtons(Qt::MouseButtons buttons)
+{
+    const QList<int> activeButtons = m_activeMouseButtons.values();
+    for (int key : activeButtons) {
+        const auto button = static_cast<Qt::MouseButton>(key);
+        if (buttons.testFlag(button)) continue;
+
+        const int id = getTouchID(key);
+        if (id >= 0) {
+            (void)sendTouchUpEvent(id, m_touchPositions[id]);
+            detachTouchIDByIndex(id);
+        }
+        m_activeMouseButtons.remove(key);
+
+        if (qsc::telemetry::enabled()) {
+            qInfo() << "[Telemetry][Input] forced-release"
+                    << "reason=host-button-state"
+                    << "button=" << key
+                    << "activeTouches=" << activeTouchCount();
+        }
+    }
+    updateMouseButtonWatchdog();
+}
+
+void InputConvertGame::updateMouseButtonWatchdog()
+{
+    if (m_activeMouseButtons.isEmpty()) {
+        m_mouseButtonWatchdog.stop();
+    } else if (!m_mouseButtonWatchdog.isActive()) {
+        m_mouseButtonWatchdog.start();
+    }
+}
+
 void InputConvertGame::getDelayQueue(const QPointF &start,
                                      const QPointF &end,
                                      double distanceStep,
@@ -406,11 +486,23 @@ void InputConvertGame::processSteerWheel(const KeyMap::KeyMapNode &node,
 
     const bool pressed = from->type() == QEvent::KeyPress;
     const int key = from->key();
-    if (key == node.data.steerWheel.up.key) m_ctrlSteerWheel.pressedUp = pressed;
-    else if (key == node.data.steerWheel.right.key) m_ctrlSteerWheel.pressedRight = pressed;
-    else if (key == node.data.steerWheel.down.key) m_ctrlSteerWheel.pressedDown = pressed;
-    else if (key == node.data.steerWheel.left.key) m_ctrlSteerWheel.pressedLeft = pressed;
+    bool *pressedState = nullptr;
+    if (key == node.data.steerWheel.up.key) pressedState = &m_ctrlSteerWheel.pressedUp;
+    else if (key == node.data.steerWheel.right.key) pressedState = &m_ctrlSteerWheel.pressedRight;
+    else if (key == node.data.steerWheel.down.key) pressedState = &m_ctrlSteerWheel.pressedDown;
+    else if (key == node.data.steerWheel.left.key) pressedState = &m_ctrlSteerWheel.pressedLeft;
     else return;
+
+    // A second physical press while our state is still down means that the
+    // previous release was lost. Reset the wheel before accepting the press.
+    if (pressed && *pressedState) {
+        if (qsc::telemetry::enabled()) {
+            qInfo() << "[Telemetry][Input] recover-steer-wheel"
+                    << "key=" << key;
+        }
+        stopSteerWheel(true);
+    }
+    *pressedState = pressed;
 
     QPointF offset;
     int pressedCount = 0;
@@ -488,6 +580,7 @@ void InputConvertGame::processKeyClick(const QPointF &clickPos,
     }
 
     if (from->type() == QEvent::KeyPress) {
+        recoverDuplicateTouch(key, "duplicate-key-down");
         const QPointF position = addJitter(clickPos);
         m_keyJitterMap.insert(key, position);
 
@@ -645,9 +738,16 @@ bool InputConvertGame::processMouseClick(const QMouseEvent *from)
     const int key = static_cast<int>(from->button());
     if (from->type() == QEvent::MouseButtonPress ||
         from->type() == QEvent::MouseButtonDblClick) {
+        recoverDuplicateTouch(key, "duplicate-mouse-down");
         const int id = attachTouchID(key);
-        if (id >= 0 && sendTouchDownEvent(id, node.data.click.keyNode.pos)) return true;
+        if (id >= 0 && sendTouchDownEvent(id, node.data.click.keyNode.pos)) {
+            m_activeMouseButtons.insert(key);
+            updateMouseButtonWatchdog();
+            return true;
+        }
         if (id >= 0) detachTouchIDByIndex(id);
+        m_activeMouseButtons.remove(key);
+        updateMouseButtonWatchdog();
         return true;
     }
 
@@ -657,6 +757,8 @@ bool InputConvertGame::processMouseClick(const QMouseEvent *from)
             sendTouchUpEvent(id, node.data.click.keyNode.pos);
             detachTouchIDByIndex(id);
         }
+        m_activeMouseButtons.remove(key);
+        updateMouseButtonWatchdog();
         return true;
     }
     return false;
@@ -668,6 +770,8 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
         m_showSize.width() <= 0 || m_showSize.height() <= 0) {
         return false;
     }
+
+    reconcileMouseButtons(from->buttons());
 
     const QPoint center(m_showSize.width() / 2, m_showSize.height() / 2);
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
@@ -718,8 +822,11 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
                 });
             } else {
                 mouseMoveStopTouch();
-                moveCursorTo(from, center);
-                m_ctrlMouseMove.lastPos = center;
+                if (moveCursorTo(from, center)) {
+                    m_ctrlMouseMove.lastPos = center;
+                } else {
+                    m_ctrlMouseMove.lastPos = current;
+                }
                 return true;
             }
         }
@@ -734,17 +841,22 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
 
     const int dx = current.x() - center.x();
     const int dy = current.y() - center.y();
-    if (dx * dx + dy * dy > 2500) {
-        moveCursorTo(from, center);
+    if (dx * dx + dy * dy > 2500 && moveCursorTo(from, center)) {
         m_ctrlMouseMove.lastPos = center;
     }
     return true;
 }
 
-void InputConvertGame::moveCursorTo(const QMouseEvent *from,
+bool InputConvertGame::moveCursorTo(const QMouseEvent *from,
                                     const QPoint &localPosPixel)
 {
-    if (!from) return;
+    if (!from) return false;
+
+    // Native Wayland intentionally forbids global pointer warping. Rely on
+    // QWindow mouse grab/pointer constraints instead of fighting the compositor.
+    if (QGuiApplication::platformName().startsWith(QLatin1String("wayland"))) {
+        return false;
+    }
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     QPoint offset = from->pos() - localPosPixel;
     QPoint global = from->globalPos();
@@ -753,6 +865,7 @@ void InputConvertGame::moveCursorTo(const QMouseEvent *from,
     QPoint global = from->globalPosition().toPoint();
 #endif
     QCursor::setPos(global - offset);
+    return true;
 }
 
 void InputConvertGame::mouseMoveStartTouch()
@@ -854,6 +967,7 @@ void InputConvertGame::releaseAllKeys()
 {
     invalidatePendingActions();
     stopMouseMoveTimer();
+    m_mouseButtonWatchdog.stop();
     if (m_ctrlSteerWheel.delayData.timer) m_ctrlSteerWheel.delayData.timer->stop();
     if (m_dragDelayData.timer) m_dragDelayData.timer->stop();
 
@@ -864,6 +978,7 @@ void InputConvertGame::releaseAllKeys()
     }
 
     resetTouchState();
+    m_activeMouseButtons.clear();
     stopSteerWheel(false);
     stopDrag(false);
     m_ctrlMouseMove.touching = false;

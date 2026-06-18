@@ -161,6 +161,11 @@ bool Controller::isCurrentCustomKeymap()
     return m_inputConvert && m_inputConvert->isCurrentCustomKeymap();
 }
 
+void Controller::cancelActiveInputs()
+{
+    if (m_inputConvert) m_inputConvert->cancelActiveInputs();
+}
+
 void Controller::postBackOrScreenOn(bool down)
 {
     ControlMsg controlMsg(ControlMsg::CMT_BACK_OR_SCREEN_ON);

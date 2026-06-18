@@ -1,4 +1,4 @@
-﻿#ifndef DEVICE_H
+#ifndef DEVICE_H
 #define DEVICE_H
 
 #include <QElapsedTimer>
@@ -90,6 +90,7 @@ public:
 
     void updateScript(QString script) override;
     bool isCurrentCustomKeymap() override;
+    void cancelActiveInputs() override;
 
 private:
     void initSignals();

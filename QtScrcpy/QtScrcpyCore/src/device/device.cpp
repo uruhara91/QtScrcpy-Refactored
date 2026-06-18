@@ -388,6 +388,11 @@ bool Device::isCurrentCustomKeymap()
     return m_controller && m_controller->isCurrentCustomKeymap();
 }
 
+void Device::cancelActiveInputs()
+{
+    if (m_controller) m_controller->cancelActiveInputs();
+}
+
 bool Device::saveFrame(int w, int h, uint8_t *rgb)
 {
     if (!rgb || w <= 0 || h <= 0 || m_params.recordPath.isEmpty()) return false;

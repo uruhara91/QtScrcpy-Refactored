@@ -1,4 +1,5 @@
 // #include <QDesktopWidget>
+#include <QApplication>
 #include <QFileInfo>
 #include <QLabel>
 #include <QMessageBox>
@@ -25,6 +26,7 @@
 #include "mousetap/mousetap.h"
 #include "ui_videoform.h"
 #include "videoform.h"
+#include "qtscrcpytelemetry.h"
 #include "../QtScrcpyCore/src/device/device.h"
 #include "../QtScrcpyCore/src/device/decoder/decoder.h"
 #include "../QtScrcpyCore/src/device/decoder/videobuffer.h"
@@ -45,10 +47,23 @@ VideoForm::VideoForm(bool framelessWindow, bool skin, bool showToolbar, QWidget 
     if (framelessWindow) {
         setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     }
+
+    connect(qApp, &QGuiApplication::applicationStateChanged,
+            this, [this](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive) {
+            QTimer::singleShot(0, this, [this]() { restorePlatformMouseGrab(); });
+        } else {
+            cancelActiveInputs("application-inactive");
+            setPlatformMouseGrab(false);
+        }
+    });
 }
 
 VideoForm::~VideoForm()
 {
+    cancelActiveInputs("destructor");
+    m_cursorGrabRequested = false;
+    setPlatformMouseGrab(false);
     delete ui;
 }
 
@@ -566,8 +581,67 @@ void VideoForm::updateFPS(quint32 fps)
 
 void VideoForm::grabCursor(bool grab)
 {
-    QRect rc = getGrabCursorRect();
-    MouseTap::getInstance()->enableMouseEventTap(rc, grab);
+    m_cursorGrabRequested = grab;
+    if (!grab) {
+        setPlatformMouseGrab(false);
+        return;
+    }
+
+    QTimer::singleShot(0, this, [this]() { restorePlatformMouseGrab(); });
+}
+
+void VideoForm::cancelActiveInputs(const char *reason)
+{
+    auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial);
+    if (device) device->cancelActiveInputs();
+
+    if (qsc::telemetry::enabled()) {
+        qInfo() << "[Telemetry][Input] ui-cancel"
+                << "reason=" << reason
+                << "serial=" << m_serial;
+    }
+}
+
+void VideoForm::setPlatformMouseGrab(bool grab)
+{
+    const QString platform = QGuiApplication::platformName();
+    const bool isXcb = platform == QLatin1String("xcb");
+    bool qtGrabbed = !grab;
+
+    // X11 already has an explicit XCB grab in MouseTap. On Wayland and
+    // Windows, use Qt's platform abstraction so compositor/security policy is
+    // respected; Windows additionally keeps ClipCursor for confinement.
+    if (!isXcb) {
+        if (QWindow *nativeWindow = windowHandle()) {
+            qtGrabbed = nativeWindow->setMouseGrabEnabled(grab);
+        } else if (!grab) {
+            qtGrabbed = true;
+        }
+    } else {
+        qtGrabbed = true;
+    }
+
+    MouseTap::getInstance()->enableMouseEventTap(getGrabCursorRect(), grab);
+    m_platformMouseGrabActive = grab && qtGrabbed;
+
+    if (grab && !qtGrabbed) {
+        qWarning() << "Mouse grab was rejected by platform:" << platform;
+    }
+    if (qsc::telemetry::enabled()) {
+        qInfo() << "[Telemetry][Input] mouse-grab"
+                << "requested=" << grab
+                << "active=" << m_platformMouseGrabActive
+                << "platform=" << platform;
+    }
+}
+
+void VideoForm::restorePlatformMouseGrab()
+{
+    if (!m_cursorGrabRequested || !isVisible() || !isActiveWindow() ||
+        QGuiApplication::applicationState() != Qt::ApplicationActive) {
+        return;
+    }
+    if (!m_platformMouseGrabActive) setPlatformMouseGrab(true);
 }
 
 void VideoForm::onFrame(int width, int height, 
@@ -592,6 +666,35 @@ void VideoForm::staysOnTop(bool top)
     if (needShow) {
         show();
     }
+}
+
+bool VideoForm::event(QEvent *event)
+{
+    if (event) {
+        switch (event->type()) {
+        case QEvent::WindowDeactivate:
+        case QEvent::Hide:
+        case QEvent::Close:
+            cancelActiveInputs("window-inactive");
+            setPlatformMouseGrab(false);
+            break;
+        case QEvent::WindowActivate:
+        case QEvent::Show:
+            QTimer::singleShot(0, this, [this]() { restorePlatformMouseGrab(); });
+            break;
+        case QEvent::WindowStateChange:
+            if (windowState().testFlag(Qt::WindowMinimized)) {
+                cancelActiveInputs("window-minimized");
+                setPlatformMouseGrab(false);
+            } else {
+                QTimer::singleShot(0, this, [this]() { restorePlatformMouseGrab(); });
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return QWidget::event(event);
 }
 
 void VideoForm::mousePressEvent(QMouseEvent *event)
@@ -785,6 +888,7 @@ void VideoForm::paintEvent(QPaintEvent *paint)
 void VideoForm::showEvent(QShowEvent *event)
 {
     Q_UNUSED(event)
+    QTimer::singleShot(0, this, [this]() { restorePlatformMouseGrab(); });
     if (!isFullScreen() && this->show_toolbar) {
         QTimer::singleShot(500, this, [this](){
             showToolForm(this->show_toolbar);
@@ -818,6 +922,9 @@ void VideoForm::resizeEvent(QResizeEvent *event)
 void VideoForm::closeEvent(QCloseEvent *event)
 {
     Q_UNUSED(event)
+    cancelActiveInputs("close");
+    m_cursorGrabRequested = false;
+    setPlatformMouseGrab(false);
     auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial);
     if (!device) {
         return;

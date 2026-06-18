@@ -1,0 +1,34 @@
+name: Apply forward handshake optimization
+
+on:
+  push:
+    branches:
+      - experimental
+    paths:
+      - .github/workflows/apply-forward-handshake-optimization.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+          fetch-depth: 0
+
+      - name: Apply deterministic source changes
+        run: python3 .github/scripts/optimize_forward_handshake.py
+
+      - name: Validate and commit
+        run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/scripts/optimize_forward_handshake.py
+          git rm .github/workflows/apply-forward-handshake-optimization.yml
+          git add QtScrcpy
+          git commit -m "Optimize adb forward server handshake"
+          git push origin HEAD:experimental

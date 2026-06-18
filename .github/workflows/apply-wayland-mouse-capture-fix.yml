@@ -1,0 +1,32 @@
+name: Apply Wayland mouse capture fix
+
+on:
+  push:
+    branches:
+      - experimental
+    paths:
+      - .github/workflows/apply-wayland-mouse-capture-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+          fetch-depth: 0
+      - name: Apply source fix
+        run: python3 .github/scripts/fix_wayland_mouse_capture.py
+      - name: Validate and commit
+        run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/scripts/fix_wayland_mouse_capture.py
+          git rm .github/workflows/apply-wayland-mouse-capture-fix.yml
+          git add QtScrcpy
+          git commit -m "Fix Wayland game-mode mouse recentering"
+          git push origin HEAD:experimental

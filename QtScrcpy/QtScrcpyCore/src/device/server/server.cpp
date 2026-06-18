@@ -5,6 +5,8 @@
 #include <QThread>
 #include <QTimer>
 #include <QTimerEvent>
+#include <array>
+#include <algorithm>
 
 #include "server.h"
 #include "qtscrcpytelemetry.h"
@@ -372,31 +374,50 @@ bool Server::startServerByStep()
 
 bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName, QSize &size)
 {
+    if (!videoSocket) return false;
+
+    constexpr qint64 infoSize = DEVICE_NAME_FIELD_LENGTH + 12;
+    constexpr qint64 timeoutMs = 3000;
+    std::array<quint8, static_cast<std::size_t>(infoSize)> buf{};
+
     QElapsedTimer timer;
     timer.start();
-    unsigned char buf[DEVICE_NAME_FIELD_LENGTH + 12];
-    while (videoSocket->bytesAvailable() < (DEVICE_NAME_FIELD_LENGTH + 12)) {
-        videoSocket->waitForReadyRead(300);
-        if (timer.elapsed() > 3000) {
-            qInfo("readInfo timeout");
+    qint64 totalRead = 0;
+    while (totalRead < infoSize) {
+        if (videoSocket->bytesAvailable() <= 0) {
+            const qint64 remaining = timeoutMs - timer.elapsed();
+            if (remaining <= 0 ||
+                !videoSocket->waitForReadyRead(
+                    static_cast<int>(std::min<qint64>(300, remaining)))) {
+                if (timer.elapsed() >= timeoutMs ||
+                    videoSocket->state() != QAbstractSocket::ConnectedState) {
+                    qInfo("readInfo timeout or disconnect");
+                    return false;
+                }
+                continue;
+            }
+        }
+
+        const qint64 chunk = videoSocket->read(
+            reinterpret_cast<char *>(buf.data() + totalRead),
+            infoSize - totalRead);
+        if (chunk < 0) {
+            qInfo("Could not retrieve device information");
             return false;
         }
+        if (chunk == 0) continue;
+        totalRead += chunk;
     }
     qDebug() << "readInfo wait time:" << timer.elapsed();
 
-    qint64 len = videoSocket->read((char *)buf, sizeof(buf));
-    if (len < DEVICE_NAME_FIELD_LENGTH + 12) {
-        qInfo("Could not retrieve device information");
-        return false;
-    }
-    buf[DEVICE_NAME_FIELD_LENGTH - 1] = '\0'; // in case the client sends garbage
-    deviceName = QString::fromUtf8((const char *)buf);
+    buf[DEVICE_NAME_FIELD_LENGTH - 1] = '\0';
+    deviceName = QString::fromUtf8(
+        reinterpret_cast<const char *>(buf.data()));
 
-    // 前4个字节是AVCodecID,当前只支持H264,所以先不解析
+    // The first 4 bytes after the device name are the codec id (H.264 here).
     size.setWidth(bufferRead32be(&buf[DEVICE_NAME_FIELD_LENGTH + 4]));
     size.setHeight(bufferRead32be(&buf[DEVICE_NAME_FIELD_LENGTH + 8]));
-
-    return true;
+    return size.isValid();
 }
 
 void Server::startAcceptTimeoutTimer()

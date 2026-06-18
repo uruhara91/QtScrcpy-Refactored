@@ -2,12 +2,25 @@
 #include <QHideEvent>
 #include <QMouseEvent>
 #include <QShowEvent>
+#include <QWindow>
 
 #include "iconhelper.h"
 #include "toolform.h"
 #include "ui_toolform.h"
 #include "videoform.h"
 #include "../groupcontroller/groupcontroller.h"
+
+namespace {
+QPoint mouseGlobalPosition(const QMouseEvent *event)
+{
+    if (!event) return {};
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return event->globalPosition().toPoint();
+#else
+    return event->globalPos();
+#endif
+}
+}
 
 ToolForm::ToolForm(QWidget *adsorbWidget, AdsorbPositions adsorbPos) : MagneticWidget(adsorbWidget, adsorbPos), ui(new Ui::ToolForm)
 {
@@ -69,23 +82,42 @@ void ToolForm::updateGroupControl()
 
 void ToolForm::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) {
-        m_dragPosition = event->pos(); 
-        event->accept();
+    if (!event || event->button() != Qt::LeftButton) {
+        MagneticWidget::mousePressEvent(event);
+        return;
     }
+
+    m_manualDragActive = false;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    // Wayland forbids clients from positioning top-level windows directly.
+    // startSystemMove() hands the drag to the compositor and is also the most
+    // reliable path for frameless tool windows on Windows 11.
+    if (QWindow *window = windowHandle(); window && window->startSystemMove()) {
+        event->accept();
+        return;
+    }
+#endif
+
+    m_dragPosition = mouseGlobalPosition(event) - frameGeometry().topLeft();
+    m_manualDragActive = true;
+    event->accept();
 }
 
 void ToolForm::mouseReleaseEvent(QMouseEvent *event)
 {
-    Q_UNUSED(event)
+    m_manualDragActive = false;
+    if (event) event->accept();
 }
 
 void ToolForm::mouseMoveEvent(QMouseEvent *event)
 {
-    if (event->buttons() & Qt::LeftButton) {
-        move(pos() + (event->pos() - m_dragPosition));
+    if (event && m_manualDragActive &&
+        event->buttons().testFlag(Qt::LeftButton)) {
+        move(mouseGlobalPosition(event) - m_dragPosition);
         event->accept();
+        return;
     }
+    MagneticWidget::mouseMoveEvent(event);
 }
 
 void ToolForm::showEvent(QShowEvent *event)

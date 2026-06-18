@@ -56,6 +56,7 @@ private:
 private:
     Ui::ToolForm *ui;
     QPoint m_dragPosition;
+    bool m_manualDragActive = false;
     QString m_serial;
     bool m_showTouch = false;
     bool m_isHost = false;

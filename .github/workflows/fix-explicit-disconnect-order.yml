@@ -1,0 +1,30 @@
+name: Fix explicit disconnect ordering
+
+on:
+  push:
+    branches:
+      - experimental
+    paths:
+      - .github/workflows/fix-explicit-disconnect-order.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+          fetch-depth: 0
+      - run: python3 .github/scripts/fix_explicit_disconnect_order.py
+      - run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/scripts/fix_explicit_disconnect_order.py
+          git rm .github/workflows/fix-explicit-disconnect-order.yml
+          git add QtScrcpy
+          git commit -m "Preserve device state during explicit disconnect"
+          git push origin HEAD:experimental

@@ -33,6 +33,7 @@ private:
     QMap<QString, QPointer<IDevice>> m_devices;
     QMap<QString, quint16> m_devicePorts;
     QSet<quint16> m_allocatedPorts;
+    QSet<QString> m_explicitDisconnects;
     quint16 m_localPortStart = 27183;
     QString m_script;
 };

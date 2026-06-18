@@ -75,23 +75,33 @@ bool DeviceManage::disconnectDevice(const QString &serial)
 {
     if (serial.isEmpty() || !m_devices.contains(serial)) return false;
 
-    QPointer<IDevice> device = m_devices.take(serial);
-    const quint16 port = m_devicePorts.take(serial);
-    if (port != 0) m_allocatedPorts.remove(port);
+    QPointer<IDevice> device = m_devices.value(serial);
+    if (device.isNull()) {
+        removeDevice(serial);
+        return false;
+    }
 
-    if (!device.isNull()) delete device.data();
+    // Keep the map entry alive while Device emits deviceDisconnected so UI
+    // observers can still retrieve userData and deregister the VideoForm.
+    m_explicitDisconnects.insert(serial);
+    delete device.data();
+    m_explicitDisconnects.remove(serial);
+
+    // A device stopped before successful startup does not emit disconnected.
+    // Release its reservation here if the signal path did not already do so.
+    if (m_devices.contains(serial)) {
+        m_devices.remove(serial);
+        const quint16 port = m_devicePorts.take(serial);
+        if (port != 0) m_allocatedPorts.remove(port);
+    }
     return true;
 }
 
 void DeviceManage::disconnectAllDevice()
 {
-    const auto devices = m_devices;
-    m_devices.clear();
-    m_devicePorts.clear();
-    m_allocatedPorts.clear();
-
-    for (const QPointer<IDevice> &device : devices) {
-        if (!device.isNull()) delete device.data();
+    const QStringList serials = m_devices.keys();
+    for (const QString &serial : serials) {
+        (void)disconnectDevice(serial);
     }
 }
 
@@ -105,8 +115,18 @@ void DeviceManage::onDeviceConnected(bool success, const QString &serial, const 
 
 void DeviceManage::onDeviceDisconnected(QString serial)
 {
+    // Emit first while the Device and its userData are still addressable.
     emit deviceDisconnected(serial);
-    removeDevice(serial);
+
+    QPointer<IDevice> device = m_devices.take(serial);
+    const quint16 port = m_devicePorts.take(serial);
+    if (port != 0) m_allocatedPorts.remove(port);
+
+    // Explicit disconnect is already inside delete Device. Spontaneous server
+    // or stream shutdown still needs deferred object destruction.
+    if (!m_explicitDisconnects.contains(serial) && !device.isNull()) {
+        device->deleteLater();
+    }
 }
 
 quint16 DeviceManage::getFreePort()

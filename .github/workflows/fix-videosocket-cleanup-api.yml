@@ -1,0 +1,30 @@
+name: Fix VideoSocket cleanup API
+
+on:
+  push:
+    branches:
+      - experimental
+    paths:
+      - .github/workflows/fix-videosocket-cleanup-api.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experimental
+          fetch-depth: 0
+      - run: python3 .github/scripts/fix_videosocket_cleanup_api.py
+      - run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/scripts/fix_videosocket_cleanup_api.py
+          git rm .github/workflows/fix-videosocket-cleanup-api.yml
+          git add QtScrcpy
+          git commit -m "Fix VideoSocket shutdown notification call"
+          git push origin HEAD:experimental

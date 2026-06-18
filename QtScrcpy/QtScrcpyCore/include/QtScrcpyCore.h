@@ -143,6 +143,7 @@ public:
 
     virtual void updateScript(QString script) = 0;
     virtual bool isCurrentCustomKeymap() = 0;
+    virtual void cancelActiveInputs() = 0;
 };
 
 class IDeviceManage : public QObject {

@@ -3,6 +3,7 @@
 
 #include <QElapsedTimer>
 #include <QHash>
+#include <QSet>
 #include <QPoint>
 #include <QPointF>
 #include <QTimer>
@@ -26,6 +27,7 @@ public:
     void wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize) override;
     void keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize) override;
     bool isCurrentCustomKeymap() override;
+    void cancelActiveInputs() override;
 
     void loadKeyMap(const QString &json);
 
@@ -53,6 +55,10 @@ private:
     void detachTouchID(int key);
     void detachTouchIDByIndex(int id);
     int getTouchID(int key) const;
+    int activeTouchCount() const;
+    void recoverDuplicateTouch(int key, const char *reason);
+    void reconcileMouseButtons(Qt::MouseButtons buttons);
+    void updateMouseButtonWatchdog();
 
     void processSteerWheel(const KeyMap::KeyMapNode &node, const QKeyEvent *from);
     void processKeyClick(const QPointF &clickPos, bool clickTwice, bool switchMap, const QKeyEvent *from);
@@ -63,7 +69,7 @@ private:
 
     bool processMouseClick(const QMouseEvent *from);
     bool processMouseMove(const QMouseEvent *from);
-    void moveCursorTo(const QMouseEvent *from, const QPoint &localPosPixel);
+    bool moveCursorTo(const QMouseEvent *from, const QPoint &localPosPixel);
     void mouseMoveStartTouch();
     void mouseMoveStopTouch();
     void startMouseMoveTimer();
@@ -136,6 +142,8 @@ private:
     } m_dragDelayData;
 
     QHash<int, QPointF> m_keyJitterMap;
+    QSet<int> m_activeMouseButtons;
+    QTimer m_mouseButtonWatchdog;
 };
 
 #endif // INPUTCONVERTGAME_H

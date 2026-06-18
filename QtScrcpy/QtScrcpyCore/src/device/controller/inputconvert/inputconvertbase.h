@@ -25,6 +25,7 @@ public:
     {
         return false;
     }
+    virtual void cancelActiveInputs() {}
 
 signals:
     void grabCursor(bool grab);

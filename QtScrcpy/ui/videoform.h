@@ -66,6 +66,9 @@ private:
     void scheduleFrameUiUpdate() noexcept;
     void processFrameUiUpdate();
     void syncFpsCounterState();
+    void cancelActiveInputs(const char *reason);
+    void setPlatformMouseGrab(bool grab);
+    void restorePlatformMouseGrab();
 
     void updateStyleSheet(bool vertical);
     QMargins getMargins(bool vertical);
@@ -77,6 +80,7 @@ private:
     QRect getScreenRect();
 
 protected:
+    bool event(QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -119,6 +123,9 @@ private:
     std::atomic<int> m_latestFrameWidth{0};
     std::atomic<int> m_latestFrameHeight{0};
     std::atomic_bool m_frameUiUpdatePending{false};
+
+    bool m_cursorGrabRequested = false;
+    bool m_platformMouseGrabActive = false;
 };
 
 inline void VideoForm::activateFrameSink() noexcept

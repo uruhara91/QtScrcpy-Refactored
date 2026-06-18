@@ -39,6 +39,7 @@ public:
 
     void updateScript(QString gameScript = "");
     bool isCurrentCustomKeymap();
+    void cancelActiveInputs();
 
     void postGoBack();
     void postGoHome();

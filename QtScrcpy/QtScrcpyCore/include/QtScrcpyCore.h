@@ -96,6 +96,13 @@ public:
     virtual ~IDevice(){}
 
 signals:
+    // NOTE: on success (success == true), this is now emitted once the
+    // first video frame's size is known, not immediately after the ADB/TCP
+    // handshake completes. This is a consequence of scrcpy-server >= 4.0,
+    // which no longer sends the video size during the handshake itself, but
+    // slightly later as part of the video stream. `size` is guaranteed
+    // valid whenever success is true. On failure (success == false), size
+    // is always an invalid QSize().
     void deviceConnected(bool success, const QString& serial, const QString& deviceName, const QSize& size);
     void deviceDisconnected(QString serial);
 

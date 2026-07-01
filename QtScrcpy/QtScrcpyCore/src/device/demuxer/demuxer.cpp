@@ -13,8 +13,26 @@
 #include <limits>
 
 #define HEADER_SIZE 12
-#define SC_PACKET_FLAG_CONFIG    (uint64_t(1) << 63)
-#define SC_PACKET_FLAG_KEY_FRAME (uint64_t(1) << 62)
+
+// scrcpy-server >= 4.0 wire format for the 12-byte packet header:
+//
+// If the MSB of byte 0 is set, this is a "session packet" (video stream
+// only), NOT a media packet. It carries no payload beyond the 12-byte
+// header itself:
+//   byte 0..3 : flags (bit 31 = session marker, bit 0 = client-resized flag)
+//   byte 4..7 : video width  (uint32 BE)
+//   byte 8..11: video height (uint32 BE)
+//
+// Otherwise (MSB of byte 0 is 0), this is a regular media packet header:
+//   byte 0..7 : PTS, with bit 62 = CONFIG flag, bit 61 = KEY_FRAME flag
+//   byte 8..11: payload size (uint32 BE), followed by that many bytes
+//
+// NOTE: versus scrcpy-server 3.3.4, SC_PACKET_FLAG_CONFIG and
+// SC_PACKET_FLAG_KEY_FRAME each shifted down by one bit (63->62, 62->61) to
+// make room for the new session-packet marker at bit 63.
+#define SC_PACKET_FLAG_SESSION   (uint64_t(1) << 63)
+#define SC_PACKET_FLAG_CONFIG    (uint64_t(1) << 62)
+#define SC_PACKET_FLAG_KEY_FRAME (uint64_t(1) << 61)
 #define SC_PACKET_PTS_MASK       (SC_PACKET_FLAG_KEY_FRAME - 1)
 
 namespace {
@@ -109,6 +127,8 @@ void Demuxer::logTelemetry() const
             << "keyFrames=" << static_cast<qulonglong>(m_keyFrameCount)
             << "configPrepends="
             << static_cast<qulonglong>(m_configPrependCount)
+            << "sessionPackets="
+            << static_cast<qulonglong>(m_sessionPacketCount)
             << "interruptedReads="
             << static_cast<qulonglong>(m_interruptedReads)
             << "readFailures=" << static_cast<qulonglong>(m_readFailures)
@@ -125,7 +145,11 @@ void Demuxer::run()
             ++m_allocationFailures;
             break;
         }
-        if (!processNetworkPacket(packet)) break;
+        bool isSession = false;
+        if (!processNetworkPacket(packet, isSession)) break;
+        // On a session packet, `packet` was left untouched (no frame to
+        // dispatch) and is simply returned to the pool by PacketHandle's
+        // destructor here; just loop back and read the next header.
     }
 
     m_configBuffer.clear();
@@ -140,8 +164,27 @@ void Demuxer::run()
     emit onStreamStop();
 }
 
-bool Demuxer::processNetworkPacket(PacketHandle &packet)
+void Demuxer::handleSessionHeader(const quint8 *header)
 {
+    // See the format documented above SC_PACKET_FLAG_SESSION.
+    const std::uint32_t flags = readBigEndian<std::uint32_t>(header);
+    const std::uint32_t width = readBigEndian<std::uint32_t>(&header[4]);
+    const std::uint32_t height = readBigEndian<std::uint32_t>(&header[8]);
+    const bool clientResized = (flags & 1u) != 0;
+
+    ++m_sessionPacketCount;
+
+    const QSize size(static_cast<int>(width), static_cast<int>(height));
+    if (!size.isValid()) return;
+
+    m_lastVideoSize = size;
+    emit sessionInfo(size, clientResized);
+}
+
+bool Demuxer::processNetworkPacket(PacketHandle &packet, bool &isSession)
+{
+    isSession = false;
+
     if (!packet) {
         ++m_allocationFailures;
         return false;
@@ -155,6 +198,15 @@ bool Demuxer::processNetworkPacket(PacketHandle &packet)
             ++m_readFailures;
         }
         return false;
+    }
+
+    // A session packet is identified by the MSB of the first byte. It is
+    // not a media packet: it carries no additional payload beyond the
+    // 12-byte header already read above.
+    if (header[0] & 0x80) {
+        isSession = true;
+        handleSessionHeader(header);
+        return true;
     }
 
     const std::uint64_t ptsFlags = readBigEndian<std::uint64_t>(header);

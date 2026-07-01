@@ -111,6 +111,17 @@ private:
     bool m_serverStartSuccess = false;
     std::atomic_bool m_disconnecting{false};
 
+    // scrcpy-server >= 4.0: the video size arrives later than the device
+    // name (via the demuxer's first session packet), so we stash the name
+    // here until both are available and deviceConnected() can be emitted.
+    QString m_pendingDeviceName;
+    // Guards the one-time recorder setup, handled on the demuxer thread
+    // (Qt::DirectConnection).
+    bool m_firstSessionInfoHandled = false;
+    // Guards the one-time deviceConnected() emission, handled on this
+    // object's own thread (auto connection).
+    bool m_deviceConnectedEmitted = false;
+
     std::unique_ptr<Server> m_server;
     std::unique_ptr<Decoder> m_decoder;
     std::unique_ptr<Controller> m_controller;

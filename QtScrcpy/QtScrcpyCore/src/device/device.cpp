@@ -190,9 +190,10 @@ void Device::initSignals()
     if (m_server) {
         connect(m_server.get(), &Server::serverStarted, this,
                 [this](bool ok, const QString &name, const QSize &size) {
+            Q_UNUSED(size); // always invalid now, see note below
             m_serverStartSuccess = ok;
-            emit deviceConnected(ok, m_params.serial, name, size);
             if (!ok) {
+                emit deviceConnected(ok, m_params.serial, name, QSize());
                 m_server->stop();
                 return;
             }
@@ -200,21 +201,25 @@ void Device::initSignals()
             qInfo() << "server start finish in"
                     << m_startTimeCount.elapsed() / 1000.0 << "s";
 
-            if (m_recorder) {
-                m_recorder->setFrameSize(size);
-                if (!m_recorder->open() || !m_recorder->startRecorder())
-                    qCritical("Could not start recorder");
-            }
+            // NOTE: since scrcpy-server 4.0, the video size is no longer
+            // sent during the handshake, so it is not available here
+            // anymore. We stash the device name and defer emitting
+            // deviceConnected() (and opening the recorder) until the
+            // demuxer reports the real size via sessionInfo(), once the
+            // stream's first session packet has been parsed.
+            m_pendingDeviceName = name;
+
             if (m_decoder && !m_decoder->open()) {
                 qCritical("Could not open decoder");
+                emit deviceConnected(false, m_params.serial, name, QSize());
                 m_server->stop();
                 return;
             }
 
             m_stream->installVideoSocket(m_server->removeVideoSocket());
-            m_stream->setFrameSize(size);
             if (!m_stream->startDecode()) {
                 qCritical("Could not start demuxer");
+                emit deviceConnected(false, m_params.serial, name, QSize());
                 m_server->stop();
                 return;
             }
@@ -248,6 +253,61 @@ void Device::initSignals()
         connect(m_stream.get(), &Demuxer::onStreamStop, this, [this]() {
             disconnectDevice();
             qDebug() << "stream thread stop";
+        });
+
+        // scrcpy-server >= 4.0: the video size is not known at handshake
+        // time anymore. It arrives here, from the demuxer thread, as soon
+        // as the stream's first session packet is parsed - which happens
+        // before any config/key frame is emitted.
+        //
+        // Two separate connections are used deliberately:
+        //
+        //  1) DirectConnection to open/start the recorder synchronously on
+        //     the demuxer thread itself. The recorder needs the size up
+        //     front to write the output stream's codec parameters, and this
+        //     must complete before the subsequent getConfigFrame/getFrame
+        //     signals (also DirectConnection) try to push packets into it.
+        //     This handler does not touch Qt GUI objects, so running on the
+        //     demuxer thread is safe.
+        //
+        //  2) A plain (auto) connection to emit deviceConnected(), so Qt
+        //     delivers it queued back to whatever thread `this` (the
+        //     Device, normally on the GUI/main thread) lives on - exactly
+        //     like every other signal this class emits. Emitting a public,
+        //     UI-facing signal directly from the demuxer thread would be
+        //     unsafe for callers that touch widgets in their slot.
+        connect(m_stream.get(), &Demuxer::sessionInfo, this,
+                [this](QSize size, bool /*clientResized*/) {
+            if (!size.isValid() || m_firstSessionInfoHandled) return;
+            m_firstSessionInfoHandled = true;
+
+            if (m_recorder) {
+                m_recorder->setFrameSize(size);
+                if (!m_recorder->open() || !m_recorder->startRecorder()) {
+                    qCritical("Could not start recorder");
+                }
+            }
+        }, Qt::DirectConnection);
+
+        connect(m_stream.get(), &Demuxer::sessionInfo, this,
+                [this](QSize size, bool clientResized) {
+            if (!size.isValid()) return;
+
+            if (!m_deviceConnectedEmitted) {
+                m_deviceConnectedEmitted = true;
+                emit deviceConnected(true, m_params.serial,
+                                      m_pendingDeviceName, size);
+                return;
+            }
+
+            // A later session packet (e.g. after a device-side rotate,
+            // resize, or a client-initiated RESIZE_DISPLAY) changed the
+            // size again. Re-opening the recorder mid-recording with a
+            // different size is not supported here; just log it so it's
+            // visible if it happens.
+            qWarning() << "Video size changed mid-session to" << size
+                       << "(clientResized=" << clientResized
+                       << "); recorder output size was not updated";
         });
 
         connect(m_stream.get(), &Demuxer::getFrame, this,
@@ -327,6 +387,9 @@ void Device::disconnectDevice()
     m_fileHandler.reset();
     if (m_serverStartSuccess) emit deviceDisconnected(m_params.serial);
     m_serverStartSuccess = false;
+    m_pendingDeviceName.clear();
+    m_firstSessionInfoHandled = false;
+    m_deviceConnectedEmitted = false;
     m_disconnecting.store(false, std::memory_order_release);
 }
 

@@ -44,7 +44,7 @@ Server::Server(QObject *parent) : QObject(parent)
         QTcpSocket *tmp = m_serverSocket.nextPendingConnection();
         if (dynamic_cast<VideoSocket *>(tmp)) {
             m_videoSocket = dynamic_cast<VideoSocket *>(tmp);
-            if (!m_videoSocket->isValid() || !readInfo(m_videoSocket, m_deviceName, m_deviceSize)) {
+            if (!m_videoSocket->isValid() || !readInfo(m_videoSocket, m_deviceName)) {
                 stop();
                 emit serverStarted(false);
             }
@@ -57,7 +57,10 @@ Server::Server(QObject *parent) : QObject(parent)
                 // we don't need the adb tunnel anymore
                 disableTunnelReverse();
                 m_tunnelEnabled = false;
-                emit serverStarted(true, m_deviceName, m_deviceSize);
+                // Video size is not known yet at handshake time (scrcpy-server
+                // >= 4.0 sends it later, embedded in the video stream). Emit
+                // an invalid QSize(); listen to Demuxer::sessionInfo() instead.
+                emit serverStarted(true, m_deviceName, QSize());
             } else {
                 stop();
                 emit serverStarted(false);
@@ -405,11 +408,16 @@ bool Server::startServerByStep()
     return stepSuccess;
 }
 
-bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName, QSize &size)
+bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName)
 {
     if (!videoSocket) return false;
 
-    constexpr qint64 infoSize = DEVICE_NAME_FIELD_LENGTH + 12;
+    // Since scrcpy-server 4.0, only the device name (64 bytes) followed by
+    // the 4-byte video codec id are sent right after the connection is
+    // established. The video width/height are NOT sent here anymore: they
+    // now arrive later, embedded in the video stream itself as a "session
+    // packet" (see Demuxer::processNetworkPacket / Demuxer::sessionInfo).
+    constexpr qint64 infoSize = DEVICE_NAME_FIELD_LENGTH + 4;
     constexpr qint64 timeoutMs = 3000;
     std::array<quint8, static_cast<std::size_t>(infoSize)> buf{};
 
@@ -447,10 +455,12 @@ bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName, QSize &size
     deviceName = QString::fromUtf8(
         reinterpret_cast<const char *>(buf.data()));
 
-    // The first 4 bytes after the device name are the codec id (H.264 here).
-    size.setWidth(bufferRead32be(&buf[DEVICE_NAME_FIELD_LENGTH + 4]));
-    size.setHeight(bufferRead32be(&buf[DEVICE_NAME_FIELD_LENGTH + 8]));
-    return size.isValid();
+    // The 4 bytes after the device name are the video codec id (e.g. "h264").
+    // We don't need to interpret it here: the demuxer already validates/uses
+    // it when it opens the decoder.
+    const quint32 codecId = bufferRead32be(&buf[DEVICE_NAME_FIELD_LENGTH]);
+    Q_UNUSED(codecId);
+    return true;
 }
 
 void Server::startAcceptTimeoutTimer()
@@ -570,8 +580,7 @@ void Server::onConnectTimer()
     }
 
     QString deviceName;
-    QSize deviceSize;
-    if (!readInfo(videoSocket.get(), deviceName, deviceSize)) {
+    if (!readInfo(videoSocket.get(), deviceName)) {
         failAttempt("device-info");
         return;
     }
@@ -593,7 +602,10 @@ void Server::onConnectTimer()
                 << "attempts=" << attempt
                 << "elapsedMs=" << connectedMs;
     }
-    emit serverStarted(true, deviceName, deviceSize);
+    // Video size is not known yet at handshake time (scrcpy-server >= 4.0
+    // sends it later, embedded in the video stream). Emit an invalid
+    // QSize(); listen to Demuxer::sessionInfo() instead.
+    emit serverStarted(true, deviceName, QSize());
 }
 
 void Server::onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult)

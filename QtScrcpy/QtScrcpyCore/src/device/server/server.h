@@ -41,7 +41,7 @@ public:
         int captureOrientationLock = 0; // 是否锁定采集方向 0不锁定 1锁定指定方向 2锁定原始方向
         int captureOrientation = 0;     // 采集方向 0 90 180 270
         int stayAwake = false;         // 是否保持唤醒
-        QString serverVersion = "3.3.4"; // server版本
+        QString serverVersion = "4.0"; // server版本
         QString logLevel = "debug";  // log级别 verbose/debug/info/warn/error
         // 编码选项 ""表示默认
         // 例如 CodecOptions="profile=1,level=2"
@@ -67,6 +67,11 @@ public:
     QTcpSocket *getControlSocket();
 
 signals:
+    // NOTE: since scrcpy-server 4.0, the video size is no longer sent during
+    // the handshake. It now arrives later, embedded in the video stream
+    // itself (as a "session packet"). `size` here is therefore always
+    // invalid (QSize()) - do not rely on it. Listen to
+    // Demuxer::sessionInfo(QSize, bool) for the real video size instead.
     void serverStarted(bool success, const QString &deviceName = "", const QSize &size = QSize());
     void serverStoped();
 
@@ -85,7 +90,7 @@ private:
     bool execute();
     bool connectTo();
     bool startServerByStep();
-    bool readInfo(VideoSocket *videoSocket, QString &deviceName, QSize &size);
+    bool readInfo(VideoSocket *videoSocket, QString &deviceName);
     void startAcceptTimeoutTimer();
     void stopAcceptTimeoutTimer();
     void startConnectTimeoutTimer();
@@ -107,7 +112,6 @@ private:
     quint32 m_restartCount = 0;
     QElapsedTimer m_forwardConnectElapsed;
     QString m_deviceName = "";
-    QSize m_deviceSize = QSize();
     ServerParams m_params;
 
     SERVER_START_STEP m_serverStartStep = SSS_NULL;

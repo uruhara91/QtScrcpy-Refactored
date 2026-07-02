@@ -157,14 +157,18 @@ target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 
 # --- PLATFORM SPECIFIC ---
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # NOTE: uses lib/windows/ (not lib/ directly) so the committed Windows
+    # .a files don't collide by filename with the committed Linux .a files,
+    # which both sit under the same third_party/ffmpeg tree in the repo.
     set(FFMPEG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg")
+    set(FFMPEG_WIN_LIB_DIR "${FFMPEG_DIR}/lib/windows")
     target_include_directories(${QSC_PROJECT_NAME} PUBLIC ${FFMPEG_DIR}/include)
     target_link_libraries(QtScrcpyCore PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavcodec.a
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavformat.a
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavutil.a
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswscale.a
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswresample.a
+        ${FFMPEG_WIN_LIB_DIR}/libavcodec.a
+        ${FFMPEG_WIN_LIB_DIR}/libavformat.a
+        ${FFMPEG_WIN_LIB_DIR}/libavutil.a
+        ${FFMPEG_WIN_LIB_DIR}/libswscale.a
+        ${FFMPEG_WIN_LIB_DIR}/libswresample.a
         secur32 bcrypt mfplat mfuuid ole32 strmiids
         mimalloc
     )
@@ -203,7 +207,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(FFMPEG_STATIC_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib")
+    # NOTE: uses lib/linux/ (not lib/ directly) so the committed Linux .a
+    # files don't collide by filename with the committed Windows .a files,
+    # which both sit under the same third_party/ffmpeg tree in the repo.
+    set(FFMPEG_STATIC_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/linux")
 
     target_include_directories(${QSC_PROJECT_NAME} PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/include

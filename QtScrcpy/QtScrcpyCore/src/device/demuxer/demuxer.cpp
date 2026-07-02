@@ -229,10 +229,23 @@ bool Demuxer::processNetworkPacket(PacketHandle &packet, bool &isSession)
     }
 
     const int totalLength = static_cast<int>(configLength + payloadLength);
-    if (av_new_packet(packet.get(), totalLength) != 0) {
+    AVBufferRef *buf = PacketBufferPool::get().acquire(
+        static_cast<std::size_t>(totalLength));
+    if (!buf) {
         ++m_allocationFailures;
         return false;
     }
+    // packet is freshly allocated/unref'd (from PacketPool), so buf/data/size
+    // are already null/zero here. av_packet_unref() is called defensively
+    // first anyway (cheap no-op when already clean) so this stays correct
+    // even if that invariant ever changes; assigning buf/data/size directly
+    // afterwards is the same contract av_packet_from_data() uses internally,
+    // just with our pooled AVBufferRef (custom free callback) instead of a
+    // default-allocated one.
+    av_packet_unref(packet.get());
+    packet->buf = buf;
+    packet->data = buf->data;
+    packet->size = totalLength;
 
     uint8_t *writePtr = packet->data;
     if (prependConfig) {

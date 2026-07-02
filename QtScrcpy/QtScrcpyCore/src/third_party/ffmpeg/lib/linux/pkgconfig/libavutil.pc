@@ -1,0 +1,14 @@
+prefix=/home/c/Downloads/src/ffmpeg_build_linux_generic
+exec_prefix=${prefix}
+libdir=/home/c/Downloads/src/ffmpeg_build_linux_generic/lib
+includedir=/home/c/Downloads/src/ffmpeg_build_linux_generic/include
+
+Name: libavutil
+Description: FFmpeg utility library
+Version: 60.26.101
+Requires: 
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavutil -lm -latomic -pthread
+Libs.private: 
+Cflags: -I${includedir}

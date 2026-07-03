@@ -173,6 +173,46 @@ endif()
 message(STATUS "[${PROJECT_NAME}] Qt version is: ${QT_DESIRED_VERSION}")
 
 #
+# Optional: native Wayland relative-pointer support (Linux + Qt6 only).
+#
+# This is strictly additive: if Qt6::WaylandClient or the scanner tool isn't
+# available (e.g. qt6-wayland-dev not installed), QSC_HAVE_WAYLAND_RELATIVE_POINTER
+# is simply never defined and util/mousetap falls back to its existing
+# warp-cursor-based confinement (xmousetap/winmousetap/cocoamousetap) at
+# runtime, exactly as it did before this feature existed. No hard build
+# dependency is introduced.
+set(QSC_HAVE_WAYLAND_RELATIVE_POINTER FALSE)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND QT_DESIRED_VERSION MATCHES 6)
+    find_package(Qt6 QUIET COMPONENTS WaylandClient)
+    find_package(Qt6WaylandScannerTools QUIET)
+    # Wayland::Scanner (the wayland-scanner binary, generates the low-level
+    # C protocol bindings that qt6_generate_wayland_protocol_client_sources
+    # layers its C++ wrapper on top of) ships as a MODULE-mode find script
+    # bundled inside Qt6's CMake tree, not a CONFIG package - it must be
+    # found separately even when Qt6::WaylandClient itself is present.
+    list(APPEND CMAKE_MODULE_PATH "${Qt6_DIR}/3rdparty/extra-cmake-modules/find-modules")
+    # The generated low-level bindings are plain C (wayland-*-protocol.c),
+    # not C++. This project only declares LANGUAGES CXX at the top, so
+    # without enabling C here those .c sources are silently skipped by
+    # target_sources() and the final link fails with undefined references
+    # to e.g. zwp_relative_pointer_v1_interface (verified with an isolated
+    # test build). Scoped to this block only - does not touch the root
+    # project() declaration or affect non-Wayland/non-Linux builds.
+    enable_language(C)
+    find_package(WaylandScanner QUIET MODULE)
+    if (TARGET Qt6::WaylandClient AND TARGET Qt6::qtwaylandscanner AND TARGET Wayland::Scanner)
+        set(QSC_HAVE_WAYLAND_RELATIVE_POINTER TRUE)
+        message(STATUS "[${PROJECT_NAME}] Qt6::WaylandClient found - native "
+                        "Wayland relative-pointer mouse-lock enabled")
+    else()
+        message(STATUS "[${PROJECT_NAME}] Qt6::WaylandClient/scanner NOT "
+                        "fully available - falling back to warp-cursor "
+                        "mouse-lock on Wayland (install qt6-wayland-dev and "
+                        "wayland-protocols to enable the native path)")
+    endif()
+endif()
+
+#
 # Sources
 #
 
@@ -242,6 +282,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         util/mousetap/xmousetap.h
         util/mousetap/xmousetap.cpp
     )
+    if (QSC_HAVE_WAYLAND_RELATIVE_POINTER)
+        set(QC_UTIL_SOURCES ${QC_UTIL_SOURCES}
+            util/mousetap/waylandmousetap.h
+            util/mousetap/waylandmousetap.cpp
+        )
+    endif()
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(QC_UTIL_SOURCES ${QC_UTIL_SOURCES} 
@@ -404,6 +450,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     
     if(mimalloc_FOUND)
         target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc)
+    endif()
+
+    if (QSC_HAVE_WAYLAND_RELATIVE_POINTER)
+        # Generates qwayland-relative-pointer-unstable-v1.{h,cpp} and
+        # qwayland-pointer-constraints-unstable-v1.{h,cpp} (Qt-style C++
+        # wrapper classes, e.g. QtWayland::zwp_relative_pointer_v1) plus the
+        # matching low-level wayland-*-client-protocol.{h,c} bindings,
+        # straight into the build directory - nothing checked-in/generated
+        # source is added to the repo.
+        qt6_generate_wayland_protocol_client_sources(${PROJECT_NAME} FILES
+            "${CMAKE_CURRENT_SOURCE_DIR}/protocols/relative-pointer-unstable-v1.xml"
+            "${CMAKE_CURRENT_SOURCE_DIR}/protocols/pointer-constraints-unstable-v1.xml"
+        )
+        target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::WaylandClient)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE QSC_HAVE_WAYLAND_RELATIVE_POINTER)
     endif()
 endif()
 

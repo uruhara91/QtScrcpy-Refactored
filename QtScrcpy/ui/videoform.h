@@ -7,10 +7,15 @@
 #include <QThread>
 #include <QWidget>
 #include <atomic>
+#include <memory>
 #include <span>
 
 #include "../QtScrcpyCore/include/QtScrcpyCore.h"
 #include "../render/qyuvopenglwidget.h"
+
+#ifdef QSC_HAVE_WAYLAND_RELATIVE_POINTER
+#include "../util/mousetap/waylandmousetap.h"
+#endif
 
 namespace Ui
 {
@@ -69,6 +74,10 @@ private:
     void cancelActiveInputs(const char *reason);
     void setPlatformMouseGrab(bool grab);
     void restorePlatformMouseGrab();
+#ifdef QSC_HAVE_WAYLAND_RELATIVE_POINTER
+    void ensureWaylandMouseTap();
+    void onWaylandRawMotion(QPointF delta);
+#endif
 
     void updateStyleSheet(bool vertical);
     QMargins getMargins(bool vertical);
@@ -126,6 +135,21 @@ private:
 
     bool m_cursorGrabRequested = false;
     bool m_platformMouseGrabActive = false;
+#ifdef QSC_HAVE_WAYLAND_RELATIVE_POINTER
+    // Lazily constructed on first use (see ensureWaylandMouseTap()) rather
+    // than in the constructor: QWindow doesn't reliably have a native
+    // wl_surface until the widget has actually been shown, and
+    // WaylandMouseTap's own resolveNativeHandles() already re-resolves it
+    // per-lock-attempt anyway, so there's no benefit to constructing this
+    // any earlier than the first grabCursor(true) call.
+    std::unique_ptr<WaylandMouseTap> m_waylandMouseTap;
+    // True once native Wayland relative-pointer lock has been used
+    // successfully at least once for the current grab session, so
+    // restorePlatformMouseGrab()/grabCursor(false) know which teardown path
+    // to take without re-probing platformName()/protocolsReady() state that
+    // may have changed mid-session.
+    bool m_waylandNativeLockActive = false;
+#endif
 };
 
 inline void VideoForm::activateFrameSink() noexcept

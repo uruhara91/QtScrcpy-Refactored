@@ -1,6 +1,7 @@
 #pragma once
-#include <QPointer>
 #include <QMouseEvent>
+#include <QPointF>
+#include <QPointer>
 #include <span>
 
 #include "QtScrcpyCoreDef.h"
@@ -49,6 +50,11 @@ public:
 
     virtual void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize) {
         Q_UNUSED(from);
+        Q_UNUSED(frameSize);
+        Q_UNUSED(showSize);
+    }
+    virtual void relativeMouseMoveEvent(const QPointF &delta, const QSize &frameSize, const QSize &showSize) {
+        Q_UNUSED(delta);
         Q_UNUSED(frameSize);
         Q_UNUSED(showSize);
     }
@@ -119,6 +125,18 @@ public:
     virtual void disconnectDevice() = 0;
 
     virtual void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize) = 0;
+    // Feeds a raw relative pointer motion delta (physical pixels of the
+    // `showSize` surface, unaccelerated) directly into the input pipeline,
+    // bypassing the QMouseEvent/absolute-position path entirely. Intended
+    // for platform-native relative-pointer sources - currently the Wayland
+    // zwp_relative_pointer_v1 protocol (see util/mousetap/waylandmousetap.h
+    // in the QtScrcpy app) - where the OS/compositor locks the cursor in
+    // place and reports motion deltas directly, instead of the
+    // warp-cursor-to-center + reconstruct-delta-from-QMouseEvent technique
+    // used on X11/Windows/macOS. Only meaningful while game-mode/mouse-move
+    // mapping is active; implementations are free to ignore this call
+    // otherwise (mirrors mouseEvent()'s own behavior in that regard).
+    virtual void relativeMouseMoveEvent(const QPointF &delta, const QSize &frameSize, const QSize &showSize) = 0;
     virtual void wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize) = 0;
     virtual void keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize) = 0;
 

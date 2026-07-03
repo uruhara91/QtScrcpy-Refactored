@@ -26,6 +26,7 @@ public:
     void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize) override;
     void wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize) override;
     void keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize) override;
+    void relativeMouseMoveEvent(const QPointF &delta, const QSize &frameSize, const QSize &showSize) override;
     bool isCurrentCustomKeymap() override;
     void cancelActiveInputs() override;
 
@@ -69,6 +70,7 @@ private:
 
     bool processMouseClick(const QMouseEvent *from);
     bool processMouseMove(const QMouseEvent *from);
+    void applyMouseMoveDelta(const QPointF &delta);
     bool moveCursorTo(const QMouseEvent *from, const QPoint &localPosPixel);
     void mouseMoveStartTouch();
     void mouseMoveStopTouch();

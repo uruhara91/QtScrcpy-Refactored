@@ -27,6 +27,21 @@ public:
     }
     virtual void cancelActiveInputs() {}
 
+    // Delivers a raw, compositor-provided relative pointer motion delta (in
+    // physical pixels of the show/widget surface, unaccelerated), bypassing
+    // the platform's absolute-position/QMouseEvent path entirely. This is
+    // fed by a native Wayland relative-pointer lock (see
+    // util/mousetap/waylandmousetap.h in the QtScrcpy app), as opposed to
+    // the historical warp-to-center + QMouseEvent delta reconstruction used
+    // for X11/Windows/macOS. Default implementation is a no-op: only
+    // InputConvertGame's relative-mouse-look feature consumes this: other
+    // converters simply ignore it.
+    virtual void relativeMouseMoveEvent(const QPointF &delta, const QSize &frameSize, const QSize &showSize) {
+        Q_UNUSED(delta);
+        Q_UNUSED(frameSize);
+        Q_UNUSED(showSize);
+    }
+
 signals:
     void grabCursor(bool grab);
 

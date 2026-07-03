@@ -794,55 +794,7 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
     const QPointF delta = QPointF(current) - m_ctrlMouseMove.lastPos;
     m_ctrlMouseMove.lastPos = current;
 
-    if (m_processMouseMove) {
-        QPointF speedRatio = m_keyMap.getMouseMoveMap().data.mouseMove.speedRatio;
-        if (qFuzzyIsNull(speedRatio.x())) speedRatio.setX(1.0);
-        if (qFuzzyIsNull(speedRatio.y())) speedRatio.setY(1.0);
-
-        m_ctrlMouseMove.lastConverPos.rx() += delta.x() / speedRatio.x() / m_showSize.width();
-        m_ctrlMouseMove.lastConverPos.ry() += delta.y() / speedRatio.y() / m_showSize.height();
-
-        mouseMoveStartTouch();
-        startMouseMoveTimer();
-
-        const bool outsideSafeZone =
-            m_ctrlMouseMove.lastConverPos.x() < 0.05 ||
-            m_ctrlMouseMove.lastConverPos.x() > 0.95 ||
-            m_ctrlMouseMove.lastConverPos.y() < 0.05 ||
-            m_ctrlMouseMove.lastConverPos.y() > 0.95;
-
-        if (outsideSafeZone) {
-            if (m_ctrlMouseMove.smallEyes) {
-                invalidatePendingActions();
-                const std::uint64_t epoch = m_actionEpoch;
-                m_processMouseMove = false;
-                QTimer::singleShot(30, this, [this, epoch]() {
-                    if (epoch != m_actionEpoch || !m_gameMap) return;
-                    mouseMoveStopTouch();
-                });
-                QTimer::singleShot(60, this, [this, epoch]() {
-                    if (epoch != m_actionEpoch || !m_gameMap) return;
-                    mouseMoveStartTouch();
-                    m_processMouseMove = true;
-                });
-            } else {
-                mouseMoveStopTouch();
-                if (moveCursorTo(from, center)) {
-                    m_ctrlMouseMove.lastPos = center;
-                } else {
-                    m_ctrlMouseMove.lastPos = current;
-                }
-                return true;
-            }
-        }
-
-        if (!m_ctrlMouseMove.paceTimer.isValid()) m_ctrlMouseMove.paceTimer.start();
-        if (m_ctrlMouseMove.paceTimer.elapsed() >= MOUSE_MOVE_INTERVAL_MS) {
-            const int id = getTouchID(Qt::ExtraButton24);
-            if (id >= 0) sendTouchMoveEvent(id, m_ctrlMouseMove.lastConverPos);
-            m_ctrlMouseMove.paceTimer.restart();
-        }
-    }
+    applyMouseMoveDelta(delta);
 
     const int dx = current.x() - center.x();
     const int dy = current.y() - center.y();
@@ -850,6 +802,86 @@ bool InputConvertGame::processMouseMove(const QMouseEvent *from)
         m_ctrlMouseMove.lastPos = center;
     }
     return true;
+}
+
+void InputConvertGame::relativeMouseMoveEvent(const QPointF &delta, const QSize &frameSize, const QSize &showSize)
+{
+    updateSize(frameSize, showSize);
+    if (m_showSize.width() <= 0 || m_showSize.height() <= 0) return;
+
+    // Unlike processMouseMove(), the caller (a native Wayland relative
+    // pointer lock) guarantees the cursor never actually leaves its locked
+    // position, so there is no on-screen cursor to recenter and no
+    // synthetic-echo risk from QCursor::setPos(). `delta` is already a
+    // clean, compositor-provided motion vector; feed it straight into the
+    // same conversion path processMouseMove() uses for its own delta so
+    // sensitivity/speedRatio/dead-zone behavior stays identical between the
+    // two input paths.
+    applyMouseMoveDelta(delta);
+}
+
+void InputConvertGame::applyMouseMoveDelta(const QPointF &delta)
+{
+    if (!m_processMouseMove) return;
+
+    QPointF speedRatio = m_keyMap.getMouseMoveMap().data.mouseMove.speedRatio;
+    if (qFuzzyIsNull(speedRatio.x())) speedRatio.setX(1.0);
+    if (qFuzzyIsNull(speedRatio.y())) speedRatio.setY(1.0);
+
+    m_ctrlMouseMove.lastConverPos.rx() += delta.x() / speedRatio.x() / m_showSize.width();
+    m_ctrlMouseMove.lastConverPos.ry() += delta.y() / speedRatio.y() / m_showSize.height();
+    // Keep the accumulator itself bounded (with a little headroom beyond
+    // the 0.05..0.95 safe zone below) so that continuous unidirectional
+    // motion - which can happen with either an unrecentered on-screen
+    // cursor (smallEyes mode) or a locked relative pointer that has no
+    // absolute position to recenter at all - can't drift the stored value
+    // arbitrarily far from the valid [0,1] range. sendTouchMoveEvent()
+    // already clamps what it sends, but bounding the accumulator too avoids
+    // a long "catch-up" delay before motion in the opposite direction
+    // starts registering again.
+    m_ctrlMouseMove.lastConverPos.setX(qBound(-0.5, m_ctrlMouseMove.lastConverPos.x(), 1.5));
+    m_ctrlMouseMove.lastConverPos.setY(qBound(-0.5, m_ctrlMouseMove.lastConverPos.y(), 1.5));
+
+    mouseMoveStartTouch();
+    startMouseMoveTimer();
+
+    const bool outsideSafeZone =
+        m_ctrlMouseMove.lastConverPos.x() < 0.05 ||
+        m_ctrlMouseMove.lastConverPos.x() > 0.95 ||
+        m_ctrlMouseMove.lastConverPos.y() < 0.05 ||
+        m_ctrlMouseMove.lastConverPos.y() > 0.95;
+
+    if (outsideSafeZone) {
+        if (m_ctrlMouseMove.smallEyes) {
+            invalidatePendingActions();
+            const std::uint64_t epoch = m_actionEpoch;
+            m_processMouseMove = false;
+            QTimer::singleShot(30, this, [this, epoch]() {
+                if (epoch != m_actionEpoch || !m_gameMap) return;
+                mouseMoveStopTouch();
+            });
+            QTimer::singleShot(60, this, [this, epoch]() {
+                if (epoch != m_actionEpoch || !m_gameMap) return;
+                mouseMoveStartTouch();
+                m_processMouseMove = true;
+            });
+        } else {
+            mouseMoveStopTouch();
+            // No on-screen cursor position to recenter here (unlike the
+            // QMouseEvent path) - the safe-zone clamp on lastConverPos
+            // itself (see clampRelativePos/getters) is what actually keeps
+            // touch coordinates in range; a locked pointer has no absolute
+            // position to reset.
+        }
+        return;
+    }
+
+    if (!m_ctrlMouseMove.paceTimer.isValid()) m_ctrlMouseMove.paceTimer.start();
+    if (m_ctrlMouseMove.paceTimer.elapsed() >= MOUSE_MOVE_INTERVAL_MS) {
+        const int id = getTouchID(Qt::ExtraButton24);
+        if (id >= 0) sendTouchMoveEvent(id, m_ctrlMouseMove.lastConverPos);
+        m_ctrlMouseMove.paceTimer.restart();
+    }
 }
 
 bool InputConvertGame::moveCursorTo(const QMouseEvent *from,

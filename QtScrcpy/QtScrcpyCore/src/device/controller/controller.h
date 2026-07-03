@@ -2,6 +2,7 @@
 #define CONTROLLER_H
 
 #include <QObject>
+#include <QPointF>
 #include <QPointer>
 #include <QRect>
 #include <QSize>
@@ -55,6 +56,7 @@ public:
     void setDisplayPower(bool on);
 
     void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize);
+    void relativeMouseMoveEvent(const QPointF &delta, const QSize &frameSize, const QSize &showSize);
     void wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize);
     void keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize);
 

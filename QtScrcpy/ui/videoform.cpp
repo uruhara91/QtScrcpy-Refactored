@@ -23,6 +23,9 @@
 #include "config.h"
 #include "iconhelper.h"
 #include "../render/qyuvopenglwidget.h"
+#ifdef QSC_HAVE_WAYLAND_RELATIVE_POINTER
+#include "../util/mousetap/waylandmousetap.h"
+#endif
 #include "toolform.h"
 #include "mousetap/mousetap.h"
 #include "ui_videoform.h"
@@ -604,12 +607,94 @@ void VideoForm::cancelActiveInputs(const char *reason)
     }
 }
 
+#ifdef QSC_HAVE_WAYLAND_RELATIVE_POINTER
+void VideoForm::ensureWaylandMouseTap()
+{
+    if (m_waylandMouseTap) return;
+
+    QWindow *handle = windowHandle();
+    if (!handle) {
+        // Not shown yet / no native window backing this widget. Callers
+        // (setPlatformMouseGrab) are expected to tolerate m_waylandMouseTap
+        // staying null here and fall back to the warp-cursor path; this
+        // will be retried the next time setPlatformMouseGrab(true) runs
+        // (e.g. restorePlatformMouseGrab() re-invokes it whenever the
+        // window regains focus/visibility).
+        return;
+    }
+
+    m_waylandMouseTap = std::make_unique<WaylandMouseTap>(handle, this);
+    connect(m_waylandMouseTap.get(), &WaylandMouseTap::rawMotion,
+            this, &VideoForm::onWaylandRawMotion);
+}
+
+void VideoForm::onWaylandRawMotion(QPointF delta)
+{
+    auto device = qsc::IDeviceManage::getInstance().getDevice(m_serial);
+    if (!device || !m_videoWidget) return;
+    // Matches the frameSize()/showSize() source used by every other input
+    // event call site below (mouseEvent/wheelEvent/keyEvent) for
+    // consistency: m_videoWidget's own frameSize(), not VideoForm::frameSize().
+    emit device->relativeMouseMoveEvent(delta, m_videoWidget.data()->frameSize(), m_videoWidget.data()->size());
+}
+#endif
+
 void VideoForm::setPlatformMouseGrab(bool grab)
 {
     if (!grab && !m_platformMouseGrabActive) return;
 
     const QString platform = QGuiApplication::platformName();
     const bool isWayland = platform.startsWith(QLatin1String("wayland"));
+
+#ifdef QSC_HAVE_WAYLAND_RELATIVE_POINTER
+    // Prefer the compositor-native relative-pointer lock on Wayland: it
+    // reports raw, unaccelerated motion deltas directly and never moves the
+    // visible cursor at all, avoiding both the periodic-recenter jitter and
+    // the round-trip cost of QCursor::setPos() that the warp-based fallback
+    // below relies on (Wayland does not let clients set the pointer
+    // position at all in the general case - see setPlatformMouseGrab's
+    // existing warp step further down, which is the reason this path
+    // exists in the first place).
+    if (isWayland) {
+        if (grab) {
+            ensureWaylandMouseTap();
+            const bool locked = m_waylandMouseTap && m_waylandMouseTap->enable(true);
+            m_waylandNativeLockActive = locked;
+            m_platformMouseGrabActive = true;
+
+            if (qsc::telemetry::enabled()) {
+                qInfo() << "[Telemetry][Input] mouse-grab"
+                        << "requested=" << grab
+                        << "active=" << m_platformMouseGrabActive
+                        << "strategy=" << (locked ? "wayland-native" : "recenter-fallback")
+                        << "platform=" << platform;
+            }
+
+            if (locked) return; // native lock engaged, skip the warp-based path entirely
+            // Native lock unavailable right now (protocols not bound yet,
+            // or no surface/pointer resolvable) - fall through to the
+            // existing warp-cursor path below so grab still does
+            // *something* useful instead of silently no-op'ing. If the
+            // protocols become ready later, the next grabCursor(true) call
+            // (e.g. via restorePlatformMouseGrab()) will pick up the
+            // native path automatically.
+        } else {
+            if (m_waylandNativeLockActive && m_waylandMouseTap) {
+                m_waylandMouseTap->enable(false);
+            }
+            m_waylandNativeLockActive = false;
+            m_platformMouseGrabActive = false;
+            if (qsc::telemetry::enabled()) {
+                qInfo() << "[Telemetry][Input] mouse-grab"
+                        << "requested=" << grab
+                        << "active=" << m_platformMouseGrabActive
+                        << "strategy=" << "wayland-native"
+                        << "platform=" << platform;
+            }
+            return; // nothing else to release - the warp path was never engaged
+        }
+    }
+#endif
 
     // Keep the proven platform-native paths: ClipCursor on Windows and XCB
     // pointer grab on X11. Qt's QWindow mouse grab is intentionally not used:

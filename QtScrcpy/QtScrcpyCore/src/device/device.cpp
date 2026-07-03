@@ -432,6 +432,13 @@ void Device::mouseEvent(const QMouseEvent *e, const QSize &frame, const QSize &s
     forEachObserver([&](DeviceObserver &o){ o.mouseEvent(e, frame, show); });
 }
 
+void Device::relativeMouseMoveEvent(const QPointF &delta, const QSize &frame, const QSize &show)
+{
+    if (!m_controller) return;
+    m_controller->relativeMouseMoveEvent(delta, frame, show);
+    forEachObserver([&](DeviceObserver &o){ o.relativeMouseMoveEvent(delta, frame, show); });
+}
+
 void Device::wheelEvent(const QWheelEvent *e, const QSize &frame, const QSize &show)
 {
     if (!m_controller) return;

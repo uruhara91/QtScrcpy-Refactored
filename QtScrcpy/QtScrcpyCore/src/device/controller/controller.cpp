@@ -323,6 +323,13 @@ void Controller::mouseEvent(const QMouseEvent *from,
     if (m_inputConvert) m_inputConvert->mouseEvent(from, frameSize, showSize);
 }
 
+void Controller::relativeMouseMoveEvent(const QPointF &delta,
+                                        const QSize &frameSize,
+                                        const QSize &showSize)
+{
+    if (m_inputConvert) m_inputConvert->relativeMouseMoveEvent(delta, frameSize, showSize);
+}
+
 void Controller::wheelEvent(const QWheelEvent *from,
                             const QSize &frameSize,
                             const QSize &showSize)

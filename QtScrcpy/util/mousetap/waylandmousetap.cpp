@@ -107,6 +107,23 @@ WaylandMouseTap::WaylandMouseTap(QWindow *window, QObject *parent)
     : QObject(parent)
     , m_window(window)
 {
+    // Allows tuning the raw-delta sensitivity scale (see the doc comment on
+    // setSensitivityScale() in the header) without rebuilding, since the
+    // right value is inherently per-mouse-DPI and can't be baked in
+    // correctly for everyone. Example: QSC_WAYLAND_MOUSE_SENSITIVITY=0.5
+    const QByteArray envScale = qgetenv("QSC_WAYLAND_MOUSE_SENSITIVITY");
+    if (!envScale.isEmpty()) {
+        bool ok = false;
+        const qreal parsed = envScale.toDouble(&ok);
+        if (ok && parsed > 0.0) {
+            m_sensitivityScale = parsed;
+        } else {
+            qCWarning(lcWaylandMouseTap, "Ignoring invalid QSC_WAYLAND_MOUSE_SENSITIVITY "
+                                          "value '%s' (expected a positive number)",
+                      envScale.constData());
+        }
+    }
+
     // Defensive guard: QWaylandClientExtension's constructor is only safe
     // to call when a live Wayland platform integration exists underneath
     // QGuiApplication - constructing one without it (e.g. on X11, or an
@@ -269,7 +286,7 @@ bool WaylandMouseTap::enable(bool enabled)
     connect(m_relativePointer.get(), &WaylandRelativePointer::rawMotion,
             this, [this](QPointF delta, quint64 utimeUs) {
         Q_UNUSED(utimeUs);
-        emit rawMotion(delta);
+        emit rawMotion(delta * m_sensitivityScale);
     });
 
     // lifetime_persistent: the lock survives the pointer leaving and

@@ -626,6 +626,34 @@ void VideoForm::ensureWaylandMouseTap()
     m_waylandMouseTap = std::make_unique<WaylandMouseTap>(handle, this);
     connect(m_waylandMouseTap.get(), &WaylandMouseTap::rawMotion,
             this, &VideoForm::onWaylandRawMotion);
+
+    // Handles a startup race specific to the very first grab attempt after
+    // a fresh server connection: if the Wayland relative-pointer/
+    // pointer-constraints globals haven't finished their registry bind yet
+    // when grabCursor(true) first fires, enable(true) below returns false
+    // and setPlatformMouseGrab() falls through to the warp-cursor path
+    // (MouseTap::enableMouseEventTap + QCursor::setPos recenter). But
+    // WaylandMouseTap keeps m_wantEnabled=true internally and
+    // auto-retries the lock itself once the globals do become ready
+    // (see onManagerActiveChanged() in waylandmousetap.cpp) - entirely on
+    // its own schedule, without VideoForm's involvement. Without this
+    // handler, that delayed native lock would activate *on top of* the
+    // still-running warp-cursor fallback: the cursor stays warped to
+    // center (from the fallback) while simultaneously receiving native
+    // relative-motion deltas (from the newly-activated lock), which is
+    // exactly the "stuck in the center but still tracking movement"
+    // symptom. Tearing down the fallback here - only when it was the
+    // fallback that was active, i.e. m_platformMouseGrabActive but NOT
+    // m_waylandNativeLockActive - reconciles the two paths whenever this
+    // delayed activation happens.
+    connect(m_waylandMouseTap.get(), &WaylandMouseTap::lockStateChanged,
+            this, [this](bool locked) {
+        if (!locked) return;
+        m_waylandNativeLockActive = true;
+        if (m_platformMouseGrabActive) {
+            MouseTap::getInstance()->enableMouseEventTap(getGrabCursorRect(), false);
+        }
+    });
 }
 
 void VideoForm::onWaylandRawMotion(QPointF delta)

@@ -126,6 +126,35 @@ public:
 
     [[nodiscard]] bool isLocked() const { return m_lockedPointer != nullptr; }
 
+    // Scale applied to every raw motion delta before it's forwarded via
+    // rawMotion(). Needed because dx_unaccel/dy_unaccel (see
+    // WaylandRelativePointer) are raw device-units, deliberately bypassing
+    // the compositor's pointer-acceleration curve entirely (see the
+    // rationale in zwp_relative_pointer_v1_relative_motion() in the .cpp) -
+    // that curve is what made the old warp-cursor path's already-scaled
+    // QMouseEvent deltas feel reasonable at the existing speedRatio keymap
+    // setting. Without any compensation, unaccelerated device-units read
+    // as dramatically more sensitive ("licin"/slippery) at the same
+    // speedRatio. This is intentionally a *separate* knob from
+    // InputConvertGame's speedRatio (sourced from the keymap JSON) rather
+    // than folded into it, because speedRatio is shared with the
+    // warp-cursor path (X11/Windows/macOS) which does NOT need this
+    // compensation - changing speedRatio to fix Wayland feel would throw
+    // off every other platform.
+    //
+    // 1000dpi is libinput's own normalization reference point for
+    // accelerated coordinates (see "Normalization of relative motion",
+    // wayland freedesktop libinput docs) - i.e. at 1000dpi, one raw
+    // device-unit is roughly comparable to what one pixel felt like at low
+    // speed under the old accelerated path. Higher-DPI mice will
+    // correspondingly feel more sensitive than the old path at this
+    // default; there is no single scale that is exactly equivalent for
+    // every mouse, since the old path's feel was itself DPI-dependent
+    // through the OS curve. Tune per-device via setSensitivityScale() if
+    // needed.
+    void setSensitivityScale(qreal scale) { m_sensitivityScale = scale; }
+    [[nodiscard]] qreal sensitivityScale() const { return m_sensitivityScale; }
+
 signals:
     // Mirrors WaylandRelativePointer::rawMotion(); forwarded here so
     // VideoForm only needs to know about WaylandMouseTap, not the
@@ -166,6 +195,15 @@ private:
     std::unique_ptr<WaylandLockedPointer> m_lockedPointer;
     bool m_wantEnabled = false;
     bool m_lastProtocolsReady = false;
+    // Conservative default: most mice are >=1000dpi nowadays, at which the
+    // old accelerated path's low-speed behavior was already close to
+    // 1 device-unit ~= 1 pixel (see setSensitivityScale() doc above). 0.35
+    // was chosen empirically as a reasonable starting point after the
+    // first real-world report of raw unaccelerated deltas feeling far too
+    // sensitive ("licin") versus the old warp-cursor path at the same
+    // keymap speedRatio - expect this to need per-device/per-user tuning
+    // via setSensitivityScale(), not to be exactly right out of the box.
+    qreal m_sensitivityScale = 0.35;
 };
 
 #endif // WAYLANDMOUSETAP_H

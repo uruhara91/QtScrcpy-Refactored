@@ -809,6 +809,25 @@ void InputConvertGame::relativeMouseMoveEvent(const QPointF &delta, const QSize 
     updateSize(frameSize, showSize);
     if (m_showSize.width() <= 0 || m_showSize.height() <= 0) return;
 
+    // Same reconciliation processMouseMove() does below via
+    // from->buttons(), just sourced from QGuiApplication::mouseButtons()
+    // instead since this path has no QMouseEvent to read a per-event
+    // button state from. This is the actual fix for clicks (e.g. the
+    // fire/left-click button) getting stuck "held" after release: without
+    // this call, relativeMouseMoveEvent() was the only per-frame input
+    // path that never re-checked whether a touch marked active in
+    // m_activeMouseButtons still corresponds to a button actually held -
+    // so if a MouseButtonRelease was ever missed by Qt/the compositor
+    // (window focus transitions during a locked-pointer grab are a
+    // plausible trigger, though this class of bug predates the Wayland
+    // native-pointer work entirely), nothing on this path would ever
+    // notice and send the missing touch-up. mouseButtons() is not a
+    // perfectly reliable signal on its own (Qt only updates it from the
+    // same press/release events that can go missing in the first place -
+    // see QTBUG-73829), but it is strictly better than never checking at
+    // all, and every mouse-move tick here is now a chance to self-correct.
+    reconcileMouseButtons(QGuiApplication::mouseButtons(), "relative-motion-tick");
+
     // Unlike processMouseMove(), the caller (a native Wayland relative
     // pointer lock) guarantees the cursor never actually leaves its locked
     // position, so there is no on-screen cursor to recenter and no

@@ -40,6 +40,18 @@ public:
 
     [[nodiscard]] bool push(AVPacket *packet);
 
+    // True once open() has failed (for any reason: muxer/protocol
+    // unavailable, output file unwritable, allocation failure, etc.) or
+    // the internal queue has overflowed (see push()). Callers should treat
+    // this as "do not call push() again" - once set, it never clears
+    // itself for the lifetime of this Recorder instance (a fresh
+    // Recorder/open() call is required to retry). Exists because m_recorder
+    // being non-null does not by itself mean the recorder is usable -
+    // Device previously only checked the former, which let every
+    // subsequent video packet keep queuing up against a recorder that had
+    // already failed to open, until the queue limit itself kicked in.
+    [[nodiscard]] bool isFailed() const { return m_failed.load(std::memory_order_acquire); }
+
 private:
     const AVOutputFormat *findMuxer(const char *name);
     bool recorderWriteHeader(const AVPacket *packet);

@@ -315,7 +315,7 @@ void Device::initSignals()
             PacketHandle packet(raw);
             if (!packet) return;
 
-            if (m_recorder) {
+            if (m_recorder && !m_recorder->isFailed()) {
                 PacketHandle copy = clonePacketReference(packet.get());
                 if (copy && m_recorder->push(copy.get())) copy.release();
             }
@@ -325,7 +325,8 @@ void Device::initSignals()
         connect(m_stream.get(), &Demuxer::getConfigFrame, this,
                 [this](AVPacket *raw) {
             PacketHandle packet(raw);
-            if (packet && m_recorder && m_recorder->push(packet.get()))
+            if (packet && m_recorder && !m_recorder->isFailed() &&
+                m_recorder->push(packet.get()))
                 packet.release();
         }, Qt::DirectConnection);
     }

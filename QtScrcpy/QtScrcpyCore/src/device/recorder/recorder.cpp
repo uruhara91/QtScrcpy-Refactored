@@ -91,24 +91,28 @@ bool Recorder::open()
     const AVCodec *inputCodec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!inputCodec) {
         qCritical("H.264 decoder not found");
+        m_failed.store(true, std::memory_order_release);
         return false;
     }
 
     const QString formatName = recorderGetFormatName(m_format);
     if (formatName.isEmpty()) {
         qCritical("Invalid recorder format");
+        m_failed.store(true, std::memory_order_release);
         return false;
     }
 
     const AVOutputFormat *format = findMuxer(formatName.toUtf8());
     if (!format) {
         qCritical("Could not find muxer");
+        m_failed.store(true, std::memory_order_release);
         return false;
     }
 
     m_formatCtx = avformat_alloc_context();
     if (!m_formatCtx) {
         qCritical("Could not allocate output context");
+        m_failed.store(true, std::memory_order_release);
         return false;
     }
 
@@ -122,6 +126,7 @@ bool Recorder::open()
     if (!outStream) {
         avformat_free_context(m_formatCtx);
         m_formatCtx = nullptr;
+        m_failed.store(true, std::memory_order_release);
         return false;
     }
 
@@ -150,6 +155,7 @@ bool Recorder::open()
                            .arg(m_fileName);
         avformat_free_context(m_formatCtx);
         m_formatCtx = nullptr;
+        m_failed.store(true, std::memory_order_release);
         return false;
     }
 

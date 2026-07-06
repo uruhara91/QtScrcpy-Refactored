@@ -44,11 +44,9 @@ extern "C" {
 
 namespace {
 
-constexpr quint32 CODEC_ID_OPUS = 0x6f707573U; // "opus"
-
-// scrcpy v3.3.4 packet metadata layout (app/src/demuxer.c).
-constexpr quint64 PACKET_FLAG_CONFIG = quint64{1} << 63;
-constexpr quint64 PACKET_FLAG_KEY_FRAME = quint64{1} << 62;
+constexpr quint32 CODEC_ID_OPUS = 0x6f707573U;
+constexpr quint64 PACKET_FLAG_CONFIG = quint64{1} << 62;
+constexpr quint64 PACKET_FLAG_KEY_FRAME = quint64{1} << 61;
 constexpr quint64 PACKET_PTS_MASK = PACKET_FLAG_KEY_FRAME - 1;
 constexpr int PACKET_HEADER_SIZE = 12;
 constexpr quint32 MAX_PACKET_SIZE = 1U << 20;
@@ -1328,6 +1326,6 @@ QString AudioOutput::resolveServerVersion() const
     const QString configured = QString::fromLocal8Bit(
         qgetenv("QTSCRCPY_SERVER_VERSION"));
     return configured.isEmpty()
-        ? QStringLiteral("3.3.4")
+        ? QStringLiteral("4.0")
         : configured;
 }

@@ -124,6 +124,42 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 endif()
 
+# Windows built with Clang (MSYS2 CLANG64: llvm + ucrt + libc++), NOT MSVC.
+# Mirrors the Linux block's aggressive-optimization philosophy as closely as
+# the target allows, but every flag below is re-verified for Windows/PE
+# applicability rather than blindly copied from the Linux block:
+#   - No -march=native equivalent chase here: left to the person building
+#     to add via CMAKE_CXX_FLAGS if they want it - omitted by default since
+#     "native" depends on the actual build machine, not something safe to
+#     hardcode into a shared CMakeLists.txt.
+#   - No -fno-plt / -Wl,-z,relro,now / --hash-style=gnu / ICF via --icf=all:
+#     these are ELF/Linux-linker-specific concepts (PLT, RELRO, GNU hash
+#     sections) that don't exist in the PE/COFF format Windows uses: passing
+#     them here would either be silently ignored or (worse) rejected by
+#     lld-link depending on flag, so they're deliberately left out rather
+#     than carried over speculatively.
+#   - mold IS available for Windows via MSYS2 CLANG64
+#     (mingw-w64-clang-x86_64-mold) and is used the same way as on Linux.
+#   - LTO (-flto=full) and function/data sections + gc-sections are
+#     supported the same way as on Linux (LLVM's LTO and section GC are not
+#     ELF-specific), so those are kept.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT MSVC)
+    add_compile_options(
+        -O3 -pipe
+        -ffunction-sections -fdata-sections
+        -flto=full
+        -fomit-frame-pointer
+        -fno-math-errno -fno-trapping-math
+    )
+
+    add_compile_definitions(NDEBUG QT_NO_DEBUG NOMINMAX WIN32_LEAN_AND_MEAN)
+
+    add_link_options(
+        -Wl,--gc-sections
+        -flto=full
+    )
+endif()
+
 #
 # Qt
 #
@@ -386,11 +422,38 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     get_target_property(QSC_BIN_OUTPUT_PATH ${PROJECT_NAME} RUNTIME_OUTPUT_DIRECTORY)
     set(QSC_DEPLOY_PATH ${QSC_BIN_OUTPUT_PATH})
 
-    # Pastikan mimalloc-static.lib ada di path library
-    target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc dwmapi) 
+    find_package(mimalloc CONFIG QUIET)
+    if (mimalloc_FOUND)
+        target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc)
+        # Force include header override
+        target_compile_definitions(${PROJECT_NAME} PRIVATE MIMALLOC_NEW_DELETE)
+    else()
+        # Fall back to the bare linker-search-path name, matching the
+        # project's prior behavior for setups (e.g. a manually-configured
+        # MSVC + vcpkg tree) where mimalloc doesn't ship its own CMake
+        # config but the .lib is discoverable via a standard library path.
+        message(STATUS "[${PROJECT_NAME}] mimalloc CONFIG package not found, "
+                        "falling back to bare '-lmimalloc' linking")
+        target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE MIMALLOC_NEW_DELETE)
+    endif()
 
-    # Force include header override
-    target_compile_definitions(${PROJECT_NAME} PRIVATE MIMALLOC_NEW_DELETE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE dwmapi)
+
+    if (NOT MSVC)
+        # mold on Windows: available via MSYS2 CLANG64
+        # (mingw-w64-clang-x86_64-mold). Only applied if actually found, so
+        # a plain MinGW64/UCRT64 (GCC) setup without mold installed still
+        # builds - falling back to the linker CMake/Clang picks by default
+        # (typically lld or ld.bfd) rather than hard-failing.
+        find_program(QSC_MOLD_LINKER NAMES mold ld.mold)
+        if (QSC_MOLD_LINKER)
+            message(STATUS "[${PROJECT_NAME}] mold linker found, using it")
+            target_link_options(${PROJECT_NAME} PRIVATE -fuse-ld=mold)
+        else()
+            message(STATUS "[${PROJECT_NAME}] mold linker not found, using toolchain default")
+        endif()
+    endif()
 endif()
 
 # MacOS

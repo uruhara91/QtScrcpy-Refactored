@@ -157,21 +157,24 @@ target_include_directories(${QSC_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 
 # --- PLATFORM SPECIFIC ---
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    # NOTE: uses lib/windows/ (not lib/ directly) so the committed Windows
-    # .a files don't collide by filename with the committed Linux .a files,
-    # which both sit under the same third_party/ffmpeg tree in the repo.
     set(FFMPEG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg")
-    set(FFMPEG_WIN_LIB_DIR "${FFMPEG_DIR}/lib/windows")
     target_include_directories(${QSC_PROJECT_NAME} PUBLIC ${FFMPEG_DIR}/include)
     target_link_libraries(QtScrcpyCore PUBLIC
-        ${FFMPEG_WIN_LIB_DIR}/libavcodec.a
-        ${FFMPEG_WIN_LIB_DIR}/libavformat.a
-        ${FFMPEG_WIN_LIB_DIR}/libavutil.a
-        ${FFMPEG_WIN_LIB_DIR}/libswscale.a
-        ${FFMPEG_WIN_LIB_DIR}/libswresample.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavcodec.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavformat.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavutil.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswscale.a
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswresample.a
         secur32 bcrypt mfplat mfuuid ole32 strmiids
-        mimalloc
     )
+    # See root CMakeLists.txt's Windows block for why find_package() is
+    # preferred over a bare "mimalloc" linker-search-path name where
+    # available. QtScrcpyCore is a STATIC library consumed by the main
+    # QtScrcpy target (see root CMakeLists.txt), so this must be a PUBLIC
+    # link regardless of whether the CONFIG package was found, for the
+    # symbols to propagate transitively to that consumer.
+    find_package(mimalloc CONFIG QUIET)
+    target_link_libraries(QtScrcpyCore PUBLIC mimalloc)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -207,10 +210,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # NOTE: uses lib/linux/ (not lib/ directly) so the committed Linux .a
-    # files don't collide by filename with the committed Windows .a files,
-    # which both sit under the same third_party/ffmpeg tree in the repo.
-    set(FFMPEG_STATIC_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/linux")
+    set(FFMPEG_STATIC_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib")
 
     target_include_directories(${QSC_PROJECT_NAME} PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/include

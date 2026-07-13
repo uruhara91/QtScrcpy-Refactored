@@ -15,8 +15,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.6378,
-        "y": 0.354
+        "x": 0.6399,
+        "y": 0.3443
       },
       "key": "Key_T",
       "switchMap": false
@@ -25,8 +25,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.8378,
-        "y": 0.7603
+        "x": 0.819,
+        "y": 0.7458
       },
       "key": "LeftButton",
       "switchMap": false
@@ -35,8 +35,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.922,
-        "y": 0.5441
+        "x": 0.9053,
+        "y": 0.5344
       },
       "key": "RightButton",
       "switchMap": false
@@ -45,8 +45,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.8533,
-        "y": 0.3612
+        "x": 0.8408,
+        "y": 0.3564
       },
       "key": "Key_V",
       "switchMap": false
@@ -55,8 +55,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.9231,
-        "y": 0.3539
+        "x": 0.9096,
+        "y": 0.3491
       },
       "key": "Key_B",
       "switchMap": false
@@ -65,7 +65,7 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.7575,
+        "x": 0.7408,
         "y": 0.5319
       },
       "key": "Key_Z",
@@ -75,8 +75,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.9211,
-        "y": 0.6985
+        "x": 0.9096,
+        "y": 0.7009
       },
       "key": "Key_Space",
       "switchMap": false
@@ -85,8 +85,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.9012,
-        "y": 0.891
+        "x": 0.8866,
+        "y": 0.8934
       },
       "key": "Key_Control",
       "switchMap": false
@@ -95,8 +95,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.8273,
-        "y": 0.936
+        "x": 0.8127,
+        "y": 0.9384
       },
       "key": "Key_C",
       "switchMap": false
@@ -105,8 +105,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.7659,
-        "y": 0.8341
+        "x": 0.7461,
+        "y": 0.8196
       },
       "key": "Key_R",
       "switchMap": false
@@ -115,7 +115,7 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.125,
+        "x": 0.1396,
         "y": 0.2707
       },
       "key": "Key_M",
@@ -125,7 +125,7 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.7032,
+        "x": 0.6886,
         "y": 0.6153
       },
       "key": "Key_Q",
@@ -155,8 +155,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.5887,
-        "y": 0.8481
+        "x": 0.5908,
+        "y": 0.8529
       },
       "key": "Key_3",
       "switchMap": false
@@ -185,8 +185,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.6679,
-        "y": 0.9051
+        "x": 0.6471,
+        "y": 0.9196
       },
       "key": "Key_G",
       "switchMap": false
@@ -195,8 +195,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.3647,
-        "y": 0.7556
+        "x": 0.3491,
+        "y": 0.758
       },
       "key": "Key_X",
       "switchMap": false
@@ -205,13 +205,13 @@
       "comment": "",
       "type": "KMT_STEER_WHEEL",
       "centerPos": {
-        "x": 0.176,
-        "y": 0.7365
+        "x": 0.1958,
+        "y": 0.7389
       },
-      "leftOffset": 0.05500,
-      "rightOffset": 0.05500,
-      "upOffset": 0.14300,
-      "downOffset": 0.13300,
+      "leftOffset": 0.05,
+      "rightOffset": 0.05,
+      "upOffset": 0.16189,
+      "downOffset": 0.1,
       "leftKey": "Key_A",
       "rightKey": "Key_D",
       "upKey": "Key_W",
@@ -222,8 +222,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.2971,
-        "y": 0.4506
+        "x": 0.3148,
+        "y": 0.4554
       },
       "key": "Key_CapsLock",
       "switchMap": false
@@ -232,8 +232,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.2749,
-        "y": 0.2066
+        "x": 0.2864,
+        "y": 0.209
       },
       "key": "Key_F",
       "switchMap": false
@@ -252,8 +252,8 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.7909,
-        "y": 0.3563
+        "x": 0.7763,
+        "y": 0.3539
       },
       "key": "Key_Tab",
       "switchMap": false
@@ -262,13 +262,13 @@
       "comment": "",
       "type": "KMT_CLICK",
       "pos": {
-        "x": 0.8441,
-        "y": 0.2346
+        "x": 0.8545,
+        "y": 0.2177
       },
       "key": "Key_N",
       "switchMap": false
     }
   ],
   "width": 1366,
-  "height": 595
+  "height": 587
 }

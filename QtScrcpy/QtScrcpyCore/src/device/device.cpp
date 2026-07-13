@@ -356,6 +356,7 @@ bool Device::connectDevice()
         p.captureOrientationLock = m_params.captureOrientationLock;
         p.captureOrientation = m_params.captureOrientation;
         p.stayAwake = m_params.stayAwake;
+        p.useRoot = m_params.useRoot;
         p.serverVersion = m_params.serverVersion;
         p.logLevel = m_params.logLevel;
         p.codecOptions = m_params.codecOptions;

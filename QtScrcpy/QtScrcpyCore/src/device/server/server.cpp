@@ -266,8 +266,13 @@ bool Server::execute()
     // 这条adb命令是阻塞运行的，m_serverProcess进程不会退出了
     QString cmdObj = args.join(" ");
 
-    const bool useRoot = qsc::telemetry::environmentFlag(
-        "QTSCRCPY_SERVER_ROOT", false);
+    // QTSCRCPY_SERVER_ROOT env var remains available as an emergency
+    // override (e.g. for debugging) even with the UI checkbox now driving
+    // this normally via ServerParams::useRoot - if set, it takes
+    // precedence over whatever the UI has configured.
+    const bool useRoot = qEnvironmentVariableIsSet("QTSCRCPY_SERVER_ROOT")
+        ? qsc::telemetry::environmentFlag("QTSCRCPY_SERVER_ROOT", false)
+        : m_params.useRoot;
     const QString serverCommand = useRoot
         ? QStringLiteral("su -c %1").arg(shellQuote(cmdObj))
         : cmdObj;

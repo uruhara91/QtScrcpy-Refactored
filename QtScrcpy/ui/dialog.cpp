@@ -182,6 +182,7 @@ void Dialog::updateBootConfig(bool toView)
         ui->alwaysTopCheck->setChecked(config.windowOnTop);
         ui->closeScreenCheck->setChecked(config.autoOffScreen);
         ui->stayAwakeCheck->setChecked(config.keepAlive);
+        ui->useRootCheck->setChecked(config.useRoot);
         ui->useSingleModeCheck->setChecked(config.simpleMode);
         ui->autoUpdatecheckBox->setChecked(config.autoUpdateDevice);
         ui->showToolbar->setChecked(config.showToolbar);
@@ -201,6 +202,7 @@ void Dialog::updateBootConfig(bool toView)
         config.autoOffScreen = ui->closeScreenCheck->isChecked();
         config.framelessWindow = ui->framelessCheck->isChecked();
         config.keepAlive = ui->stayAwakeCheck->isChecked();
+        config.useRoot = ui->useRootCheck->isChecked();
         config.simpleMode = ui->useSingleModeCheck->isChecked();
         config.autoUpdateDevice = ui->autoUpdatecheckBox->isChecked();
         config.showToolbar = ui->showToolbar->isChecked();
@@ -302,6 +304,7 @@ void Dialog::on_startServerBtn_clicked()
         params.captureOrientation = (ui->lockOrientationBox->currentIndex() - 1) * 90;
     }
     params.stayAwake = ui->stayAwakeCheck->isChecked();
+    params.useRoot = ui->useRootCheck->isChecked();
     params.recordFile = ui->recordScreenCheck->isChecked();
     params.recordPath = ui->recordPathEdt->text().trimmed();
     params.recordFileFormat = ui->formatBox->currentText().trimmed();

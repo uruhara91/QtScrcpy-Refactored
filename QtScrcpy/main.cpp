@@ -19,7 +19,9 @@
 #include "mousetap/mousetap.h"
 #include "adbprocess.h"
 #include "qtscrcpytelemetry.h"
+#ifdef Q_OS_WIN
 #include <mimalloc-new-delete.h>
+#endif
 
 #ifndef QTSCRCPY_VERSION
 #define QTSCRCPY_VERSION "0.0.0"

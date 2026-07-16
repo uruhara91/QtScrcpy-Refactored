@@ -183,6 +183,7 @@ void Dialog::updateBootConfig(bool toView)
         ui->closeScreenCheck->setChecked(config.autoOffScreen);
         ui->stayAwakeCheck->setChecked(config.keepAlive);
         ui->useRootCheck->setChecked(config.useRoot);
+        ui->reniceIndicatorCheck->setChecked(config.useRoot);
         ui->useSingleModeCheck->setChecked(config.simpleMode);
         ui->autoUpdatecheckBox->setChecked(config.autoUpdateDevice);
         ui->showToolbar->setChecked(config.showToolbar);
@@ -1025,6 +1026,13 @@ void Dialog::on_recordScreenCheck_clicked(bool checked)
         qWarning() << "please select record save path!!!";
         ui->recordScreenCheck->setChecked(false);
     }
+}
+
+void Dialog::on_useRootCheck_clicked(bool checked)
+{
+    // Renice/ionice boosting is only meaningful (and only permitted) when
+    // the server runs as root, so the indicator just mirrors this checkbox.
+    ui->reniceIndicatorCheck->setChecked(checked);
 }
 
 void Dialog::on_usbConnectBtn_clicked()

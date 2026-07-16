@@ -273,13 +273,33 @@ bool Server::execute()
     const bool useRoot = qEnvironmentVariableIsSet("QTSCRCPY_SERVER_ROOT")
         ? qsc::telemetry::environmentFlag("QTSCRCPY_SERVER_ROOT", false)
         : m_params.useRoot;
+
+    // When running as root we also boost the server's scheduling priority:
+    // CPU nice -9 (higher priority, requires root to go below the default
+    // -8 negative floor on most Android kernels) and best-effort I/O class
+    // at priority 0. `$$` is the PID of this very shell (the one that will
+    // `exec` into app_process below); exec replaces the process image
+    // in-place without changing the PID, so renice/ionice applied here
+    // stick to the eventual scrcpy-server process itself. Adjustments run
+    // silently (`>/dev/null 2>&1`) and never abort the launch on failure -
+    // e.g. on kernels without CFQ/BFQ ionice support - since capture must
+    // still proceed without the boost.
+    static const int kServerNiceLevel = -9;
+    static const QString kServerIoClass = QStringLiteral("2"); // best-effort
+    static const QString kServerIoPriority = QStringLiteral("0");
+    const QString reniceCmd = useRoot
+        ? QStringLiteral("renice -n %1 -p $$ >/dev/null 2>&1; ionice -c %2 -n %3 -p $$ >/dev/null 2>&1; ")
+              .arg(kServerNiceLevel)
+              .arg(kServerIoClass, kServerIoPriority)
+        : QString();
     const QString serverCommand = useRoot
-        ? QStringLiteral("su -c %1").arg(shellQuote(cmdObj))
+        ? QStringLiteral("su -c %1").arg(shellQuote(reniceCmd + QStringLiteral("exec ") + cmdObj))
         : cmdObj;
 
     if (qsc::telemetry::enabled()) {
         qInfo() << "[Telemetry][Server] launch"
                 << "uidMode=" << (useRoot ? "root" : "shell")
+                << "renice=" << (useRoot ? "nice-9/ionice-be0" : "none")
                 << "version=" << m_params.serverVersion
                 << "maxSize=" << m_params.maxSize
                 << "maxFps=" << m_params.maxFps

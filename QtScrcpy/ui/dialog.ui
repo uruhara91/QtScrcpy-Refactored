@@ -626,36 +626,7 @@
             <property name="bottomMargin">
              <number>0</number>
             </property>
-            <item row="0" column="4">
-             <widget class="QCheckBox" name="fpsCheck">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="text">
-               <string>show fps</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="notDisplayCheck">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="text">
-               <string>background record</string>
-              </property>
-              <property name="checkable">
-               <bool>false</bool>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
+            <item row="0" column="0">
              <widget class="QCheckBox" name="alwaysTopCheck">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
@@ -671,7 +642,40 @@
               </property>
              </widget>
             </item>
-            <item row="0" column="0">
+            <item row="0" column="1">
+             <widget class="QCheckBox" name="framelessCheck">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="text">
+               <string>frameless</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="2">
+             <widget class="QCheckBox" name="showToolbar">
+              <property name="text">
+               <string>show toolbar</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="3">
+             <widget class="QCheckBox" name="fpsCheck">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="text">
+               <string>show fps</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
              <widget class="QCheckBox" name="recordScreenCheck">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
@@ -684,8 +688,8 @@
               </property>
              </widget>
             </item>
-            <item row="0" column="3">
-             <widget class="QCheckBox" name="useReverseCheck">
+            <item row="1" column="1">
+             <widget class="QCheckBox" name="notDisplayCheck">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
                 <horstretch>0</horstretch>
@@ -693,14 +697,14 @@
                </sizepolicy>
               </property>
               <property name="text">
-               <string>reverse connection</string>
+               <string>background record</string>
               </property>
-              <property name="checked">
-               <bool>true</bool>
+              <property name="checkable">
+               <bool>false</bool>
               </property>
              </widget>
             </item>
-            <item row="1" column="1">
+            <item row="1" column="2">
              <widget class="QCheckBox" name="closeScreenCheck">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
@@ -714,19 +718,6 @@
              </widget>
             </item>
             <item row="1" column="3">
-             <widget class="QCheckBox" name="framelessCheck">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="text">
-               <string>frameless</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="4">
              <widget class="QCheckBox" name="stayAwakeCheck">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
@@ -740,9 +731,18 @@
              </widget>
             </item>
             <item row="2" column="0">
-             <widget class="QCheckBox" name="showToolbar">
+             <widget class="QCheckBox" name="useReverseCheck">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
               <property name="text">
-               <string>show toolbar</string>
+               <string>reverse connection</string>
+              </property>
+              <property name="checked">
+               <bool>true</bool>
               </property>
              </widget>
             </item>
@@ -759,6 +759,28 @@
               </property>
               <property name="text">
                <string>run server as root</string>
+              </property>
+              <property name="checked">
+               <bool>false</bool>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="2">
+             <widget class="QCheckBox" name="reniceIndicatorCheck">
+              <property name="enabled">
+               <bool>false</bool>
+              </property>
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="toolTip">
+               <string>When 'run server as root' is enabled, the scrcpy-server process is automatically renice'd to -9 and set to ionice best-effort priority 0 for smoother capture. This is a status indicator, not a separate toggle.</string>
+              </property>
+              <property name="text">
+               <string>nice -9 / ionice be0</string>
               </property>
               <property name="checked">
                <bool>false</bool>
@@ -871,7 +893,7 @@
              </widget>
             </item>
             <item>
-             <widget class="QPushButton" name="startServerBtn">
+             <widget class="QPushButton" name="updateDevice">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
                 <horstretch>0</horstretch>
@@ -879,7 +901,7 @@
                </sizepolicy>
               </property>
               <property name="text">
-               <string>start server</string>
+               <string>refresh devices</string>
               </property>
               <property name="autoDefault">
                <bool>false</bool>
@@ -887,7 +909,7 @@
              </widget>
             </item>
             <item>
-             <widget class="QPushButton" name="stopServerBtn">
+             <widget class="QPushButton" name="getIPBtn">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
                 <horstretch>0</horstretch>
@@ -895,7 +917,7 @@
                </sizepolicy>
               </property>
               <property name="text">
-               <string>stop server</string>
+               <string>get device IP</string>
               </property>
               <property name="autoDefault">
                <bool>false</bool>
@@ -927,6 +949,38 @@
              <number>0</number>
             </property>
             <item>
+             <widget class="QPushButton" name="startServerBtn">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="text">
+               <string>start server</string>
+              </property>
+              <property name="autoDefault">
+               <bool>false</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="stopServerBtn">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="text">
+               <string>stop server</string>
+              </property>
+              <property name="autoDefault">
+               <bool>false</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
              <widget class="QPushButton" name="stopAllServerBtn">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
@@ -936,38 +990,6 @@
               </property>
               <property name="text">
                <string>stop all server</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="updateDevice">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="text">
-               <string>refresh devices</string>
-              </property>
-              <property name="autoDefault">
-               <bool>false</bool>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="getIPBtn">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="text">
-               <string>get device IP</string>
-              </property>
-              <property name="autoDefault">
-               <bool>false</bool>
               </property>
              </widget>
             </item>

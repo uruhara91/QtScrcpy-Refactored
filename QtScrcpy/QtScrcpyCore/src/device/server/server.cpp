@@ -292,9 +292,23 @@ bool Server::execute()
               .arg(kServerNiceLevel)
               .arg(kServerIoClass, kServerIoPriority)
         : QString();
-    const QString serverCommand = useRoot
-        ? QStringLiteral("su -c %1").arg(shellQuote(reniceCmd + QStringLiteral("exec ") + cmdObj))
-        : cmdObj;
+    // cmdObj's first token is "CLASSPATH=<path>", relying on the shell's
+    // VAR=val prefix form to scope the env var to the command that
+    // follows. That prefix form only applies to ordinary commands, not to
+    // the `exec` builtin - `exec CLASSPATH=x app_process ...` makes the
+    // shell try to exec a literal file named "CLASSPATH=x" instead of
+    // setting the variable. So when wrapping with exec, the assignment
+    // must be split out into its own `export` statement first.
+    QString serverCommand = cmdObj;
+    if (useRoot) {
+        const QString classpathAssign = args.isEmpty() ? QString() : args.first();
+        const QString execArgs = args.size() > 1
+            ? QStringList(args.mid(1)).join(" ")
+            : QString();
+        const QString innerCmd = reniceCmd
+            + QStringLiteral("export %1; exec %2").arg(classpathAssign, execArgs);
+        serverCommand = QStringLiteral("su -c %1").arg(shellQuote(innerCmd));
+    }
 
     if (qsc::telemetry::enabled()) {
         qInfo() << "[Telemetry][Server] launch"

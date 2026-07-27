@@ -80,7 +80,7 @@ private slots:
     void onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult);
 
 protected:
-    void timerEvent(QTimerEvent *event);
+    void timerEvent(QTimerEvent *event) override;
 
 private:
     bool pushServer();

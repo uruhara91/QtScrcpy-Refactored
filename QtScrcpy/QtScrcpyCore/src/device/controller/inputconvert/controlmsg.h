@@ -83,6 +83,14 @@ private:
     struct ControlMsgData
     {
         ControlMsgType type = CMT_NULL;
+        // CATATAN (audit §5.1): sama seperti KeyMap::KeyMapNode (keymap.h) --
+        // union + anonymous struct ini kandidat kuat untuk std::variant,
+        // sengaja belum dikerjakan di optimasi ini karena scope-nya besar
+        // (mengubah bentuk data + semua call site di controlmsg.cpp) dan
+        // kode ini sendiri dinilai audit sudah solid/teruji (protocol_tests.cpp
+        // ada dan sudah dipakai memvalidasi fix §4.1 di sini). Direkomendasikan
+        // sebagai follow-up terpisah, jalankan tests/protocol_tests.cpp di
+        // tiap langkah refactor + smoke-test manual di device asli.
         union
         {
             struct
@@ -94,7 +102,7 @@ private:
             } injectKeycode;
             struct
             {
-                char *text = Q_NULLPTR;
+                char *text = nullptr;
                 quint32 length = 0;
             } injectText;
             struct
@@ -124,7 +132,7 @@ private:
             struct
             {
                 uint64_t sequence = 0;
-                char *text = Q_NULLPTR;
+                char *text = nullptr;
                 quint32 length = 0;
                 bool paste = true;
             } setClipboard;

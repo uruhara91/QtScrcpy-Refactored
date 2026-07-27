@@ -106,12 +106,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         -fno-math-errno -fno-trapping-math
     )
 
-    # Preprocessor Definitions
-    add_compile_definitions(NDEBUG QT_NO_DEBUG)
+    # NDEBUG/QT_NO_DEBUG SENGAJA TIDAK di-hardcode di sini. CMake sudah
+    # otomatis menambahkan NDEBUG lewat CMAKE_CXX_FLAGS_<CONFIG> untuk
+    # Release/RelWithDebInfo/MinSizeRel (bukan Debug) sesuai CMAKE_BUILD_TYPE
+    # yang dipilih. Hardcode unconditional di sini akan membatalkan
+    # `-DCMAKE_BUILD_TYPE=Debug` (Q_ASSERT jadi no-op, qDebug() default
+    # hilang lewat covertLogLevel() di main.cpp) walau user sengaja minta
+    # build Debug.
 
     # Linker Flags (_link)
+    # mold hanya dipakai kalau memang ter-install; kalau tidak ada, fallback
+    # ke linker default toolchain daripada gagal total di tahap link.
+    find_program(QSC_MOLD_LINKER NAMES mold ld.mold)
+    if (QSC_MOLD_LINKER)
+        message(STATUS "[${PROJECT_NAME}] mold linker found, using it")
+        add_link_options(-fuse-ld=mold)
+    else()
+        message(STATUS "[${PROJECT_NAME}] mold linker not found, using toolchain default (install with e.g. 'sudo pacman -S mold' on Arch/CachyOS)")
+    endif()
+
     add_link_options(
-        -fuse-ld=mold
         -Wl,-O3
         -Wl,--gc-sections
         -Wl,--icf=all
@@ -152,7 +166,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT MSVC)
         -fno-math-errno -fno-trapping-math
     )
 
-    add_compile_definitions(NDEBUG QT_NO_DEBUG NOMINMAX WIN32_LEAN_AND_MEAN)
+    # NDEBUG/QT_NO_DEBUG sengaja tidak di-hardcode di sini juga (lihat
+    # penjelasan di blok Linux di atas) — biar CMAKE_BUILD_TYPE=Debug tetap
+    # benar-benar Debug. NOMINMAX/WIN32_LEAN_AND_MEAN bukan build-type-specific
+    # (cuma windows-header hygiene) jadi tetap unconditional.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 
     add_link_options(
         -Wl,--gc-sections
@@ -513,6 +531,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     
     if(mimalloc_FOUND)
         target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc)
+        # Windows sudah pasang override operator new/delete secara eksplisit
+        # (main.cpp, #ifdef Q_OS_WIN -> <mimalloc-new-delete.h>). Di Linux,
+        # link mimalloc tanpa header override ini kemungkinan besar cuma
+        # ke-link tapi operator new/delete tetap lewat glibc malloc (§6 audit).
+        # Definisikan macro ini HANYA kalau mimalloc benar-benar ketemu, supaya
+        # main.cpp bisa include header override tanpa memaksa dependency
+        # mimalloc untuk mesin yang belum install paketnya.
+        target_compile_definitions(${PROJECT_NAME} PRIVATE QSC_HAVE_MIMALLOC)
     endif()
 
     if (QSC_HAVE_WAYLAND_RELATIVE_POINTER)

@@ -77,8 +77,6 @@ set(QSC_DEVICE_SOURCES
     src/device/android/keycodes.h
     src/device/controller/controller.h
     src/device/controller/controller.cpp
-    src/device/controller/bufferutil.h
-    src/device/controller/bufferutil.cpp
     src/device/controller/inputconvert/inputconvertbase.h
     src/device/controller/inputconvert/inputconvertbase.cpp
     src/device/controller/inputconvert/inputconvertnormal.h

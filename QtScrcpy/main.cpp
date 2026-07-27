@@ -21,6 +21,14 @@
 #include "qtscrcpytelemetry.h"
 #ifdef Q_OS_WIN
 #include <mimalloc-new-delete.h>
+#elif defined(Q_OS_LINUX) && defined(QSC_HAVE_MIMALLOC)
+// Windows memasang override ini secara eksplisit; di Linux mimalloc dulunya
+// hanya di-link tanpa header ini, jadi kemungkinan besar tidak benar-benar
+// dipakai sebagai allocator untuk operator new/delete (audit §6).
+// QSC_HAVE_MIMALLOC hanya didefinisikan oleh CMake kalau find_package(mimalloc)
+// berhasil, jadi include ini aman (tidak memaksa dependency di mesin yang
+// belum punya paket mimalloc).
+#include <mimalloc-new-delete.h>
 #endif
 
 #ifndef QTSCRCPY_VERSION
@@ -157,25 +165,15 @@ int main(int argc, char *argv[])
 void installTranslator()
 {
     static QTranslator translator;
-    QLocale locale;
-    QLocale::Language language = locale.language();
 
-    QString configLang = Config::getInstance().getLanguage();
-    if (configLang == "zh_CN") {
-        language = QLocale::Chinese;
-    } else if (configLang == "en_US") {
-        language = QLocale::English;
-    } else if (configLang == "ja_JP") {
-        language = QLocale::Japanese;
-    }
-
-    QString languagePath = ":/i18n/";
-    switch (language) {
-    case QLocale::English:
-    default:
-        languagePath += "en_US.qm";
-        break;
-    }
+    // Hanya res/i18n/en_US.qm yang di-bundle (lihat res/res.qrc) — dulu ada
+    // pengecekan Config "Language" == "zh_CN"/"ja_JP" di sini yang meresolve
+    // ke QLocale::Chinese/Japanese, tapi switch di bawah tidak pernah punya
+    // case untuk itu (cuma English+default), jadi setting itu tidak pernah
+    // benar-benar berefek — dead code yang menyesatkan (audit §3.6). Untuk
+    // menambah bahasa lain nanti: taruh file .qm baru di res/i18n/, daftarkan
+    // di res/res.qrc, lalu load berdasar Config::getLanguage() di sini.
+    const QString languagePath = QStringLiteral(":/i18n/en_US.qm");
 
     if (!translator.load(languagePath)) {
         qWarning() << "Failed to load translation file:" << languagePath;

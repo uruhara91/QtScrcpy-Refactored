@@ -13,9 +13,9 @@ namespace qsc {
 
 AdbProcess::AdbProcess(QObject *parent)
     : QObject(parent)
-    , m_adbImpl(new AdbProcessImpl())
+    , m_adbImpl(std::make_unique<AdbProcessImpl>())
 {
-    connect(m_adbImpl, &AdbProcessImpl::adbProcessImplResult,
+    connect(m_adbImpl.get(), &AdbProcessImpl::adbProcessImplResult,
             this, &qsc::AdbProcess::adbProcessResult);
 }
 
@@ -24,12 +24,18 @@ AdbProcess::~AdbProcess()
     if (m_adbImpl->isRuning()) {
         m_adbImpl->terminateProcess();
     }
-    delete m_adbImpl;
+    // unique_ptr menangani dealokasi; AdbProcessImpl adalah tipe lengkap di sini
+    // (adbprocessimpl.h ter-include di atas) jadi aman dipakai sebagai Pimpl deleter.
 }
 
 void AdbProcess::setAdbPath(const QString &adbPath)
 {
     g_adbPath = adbPath;
+}
+
+const QString &AdbProcess::getAdbPath()
+{
+    return AdbProcessImpl::getAdbPath();
 }
 
 void AdbProcess::execute(const QString &serial, const QStringList &args)

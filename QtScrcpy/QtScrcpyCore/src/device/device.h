@@ -97,6 +97,10 @@ private:
     void initSignals();
     bool saveFrame(int width, int height, uint8_t* dataRGB32);
 
+    // Lihat catatan kontrak di IDevice::registerDeviceObserver() (QtScrcpyCore.h):
+    // callback observer TIDAK BOLEH memanggil balik registerDeviceObserver()/
+    // deRegisterDeviceObserver()/forEachObserver() secara sinkron -- shared_mutex
+    // di bawah ini tidak reentrant (audit §4.4).
     template <typename Callback>
     void forEachObserver(Callback&& callback) const
     {

@@ -11,7 +11,15 @@ GroupController::GroupController(QObject *parent) : QObject(parent)
 
 bool GroupController::isHost(const QString &serial)
 {
-    auto data = qsc::IDeviceManage::getInstance().getDevice(serial)->getUserData();
+    auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+    if (!device) {
+        // Device sudah hilang dari DeviceManage (mis. baru saja disconnect).
+        // Treat sebagai host-equivalent supaya caller (mouseEvent/keyEvent/dll,
+        // yang men-skip host lewat `if (isHost(serial)) continue;`) aman skip.
+        return true;
+    }
+
+    auto data = device->getUserData();
     if (!data) {
         return true;
     }
@@ -21,7 +29,12 @@ bool GroupController::isHost(const QString &serial)
 
 QSize GroupController::getFrameSize(const QString &serial)
 {
-    auto data = qsc::IDeviceManage::getInstance().getDevice(serial)->getUserData();
+    auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+    if (!device) {
+        return QSize();
+    }
+
+    auto data = device->getUserData();
     if (!data) {
         return QSize();
     }

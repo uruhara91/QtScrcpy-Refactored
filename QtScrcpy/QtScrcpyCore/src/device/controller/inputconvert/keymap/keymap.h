@@ -70,6 +70,17 @@ public:
     struct KeyMapNode
     {
         KeyMapType type = KMT_INVALID;
+        // CATATAN (audit §5.1): union + anonymous struct ini kandidat kuat
+        // untuk diganti std::variant (tiap alternatif jadi tipe bernama,
+        // construction/destruction alternatif aktif ditangani otomatis oleh
+        // variant, lebih type-safe). SENGAJA belum dikerjakan di optimasi ini:
+        // ini refactor besar yang mengubah bentuk data + seluruh call site
+        // (di sini maupun ControlMsgData di controlmsg.h yang polanya sama),
+        // menyentuh kode yang audit sendiri nilai sudah solid/teruji, dan
+        // saya tidak punya cara memvalidasi ke hardware Android asli di sini.
+        // Direkomendasikan sebagai follow-up terpisah, idealnya sambil
+        // menjalankan tests/protocol_tests.cpp (untuk ControlMsgData) di
+        // setiap langkah + smoke-test manual di device asli.
         union DATA
         {
             struct

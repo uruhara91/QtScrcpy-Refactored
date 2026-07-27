@@ -111,19 +111,26 @@ void AdbProcessImpl::initSignals()
     });
 
     connect(this, &QProcess::readyReadStandardError, this, [this]() {
-        const QString tmp = QString::fromUtf8(readAllStandardError()).trimmed();
+        // Akumulasi raw chunk apa adanya — JANGAN trim di sini. readyRead bisa
+        // fire berkali-kali untuk satu proses, dan trimming per-chunk bisa
+        // menghapus newline yang kebetulan jatuh di boundary chunk, merusak
+        // parsing baris di kemudian hari. trimmed() hanya untuk kerapian log.
+        const QString tmp = QString::fromUtf8(readAllStandardError());
         m_errorOutput += tmp;
         qWarning() << QString("AdbProcessImpl::error:%1")
-                          .arg(tmp)
+                          .arg(tmp.trimmed())
                           .toStdString()
                           .data();
     });
 
     connect(this, &QProcess::readyReadStandardOutput, this, [this]() {
-        const QString tmp = QString::fromUtf8(readAllStandardOutput()).trimmed();
+        // Sama seperti di atas: simpan chunk mentah ke m_standardOutput supaya
+        // getDevicesSerialFromStdOut() (split per-baris lalu per-tab) tidak
+        // kehilangan pemisah baris akibat trim per-chunk.
+        const QString tmp = QString::fromUtf8(readAllStandardOutput());
         m_standardOutput += tmp;
         qInfo() << QString("AdbProcessImpl::out:%1")
-                       .arg(tmp)
+                       .arg(tmp.trimmed())
                        .toStdString()
                        .data();
     });

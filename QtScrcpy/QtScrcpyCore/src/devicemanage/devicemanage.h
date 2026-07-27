@@ -13,9 +13,9 @@ class DeviceManage : public IDeviceManage
     Q_OBJECT
 public:
     explicit DeviceManage();
-    virtual ~DeviceManage();
+    ~DeviceManage() override;
 
-    virtual QPointer<IDevice> getDevice(const QString& serial) override;
+    QPointer<IDevice> getDevice(const QString& serial) override;
 
     bool connectDevice(qsc::DeviceParams params) override;
     bool disconnectDevice(const QString &serial) override;

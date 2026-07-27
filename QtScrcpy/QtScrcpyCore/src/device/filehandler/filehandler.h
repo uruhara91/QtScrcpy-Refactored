@@ -16,9 +16,7 @@ public:
     };
 
     FileHandler(QObject *parent = nullptr);
-    virtual ~FileHandler();
-
-    const QString &getDevicePath();
+    ~FileHandler() override;
 
 public slots:
     void onPushFileRequest(const QString &serial, const QString &file, const QString &devicePath = "");

@@ -58,7 +58,7 @@ public:
     };
 
     explicit Server(QObject *parent = nullptr);
-    virtual ~Server();
+    ~Server() override;
 
     bool start(Server::ServerParams params);
     void stop();

@@ -155,6 +155,14 @@ void Device::showTouch(bool show)
             [adb](AdbProcess::ADB_EXEC_RESULT result) {
         if (result != AdbProcess::AER_SUCCESS_START) adb->deleteLater();
     });
+    // Safety net kalau proses adb hang tanpa pernah sampai state akhir (mis.
+    // adb daemon macet): tanpa ini, `adb` numpuk sebagai child Device selama
+    // app hidup kalau show-touch di-toggle berkali-kali dalam sesi panjang
+    // (audit §4.6). ~AdbProcess() sudah terminate proses yang masih jalan,
+    // jadi cukup deleteLater() di sini. adb sebagai context object membuat
+    // timer ini otomatis batal kalau adb sudah lebih dulu dihapus lewat
+    // jalur normal di atas.
+    QTimer::singleShot(10000, adb, [adb]() { adb->deleteLater(); });
     adb->setShowTouchesEnabled(getSerial(), show);
 }
 

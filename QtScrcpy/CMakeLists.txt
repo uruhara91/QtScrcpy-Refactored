@@ -106,26 +106,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         -fno-math-errno -fno-trapping-math
     )
 
-    # NDEBUG/QT_NO_DEBUG SENGAJA TIDAK di-hardcode di sini. CMake sudah
-    # otomatis menambahkan NDEBUG lewat CMAKE_CXX_FLAGS_<CONFIG> untuk
-    # Release/RelWithDebInfo/MinSizeRel (bukan Debug) sesuai CMAKE_BUILD_TYPE
-    # yang dipilih. Hardcode unconditional di sini akan membatalkan
-    # `-DCMAKE_BUILD_TYPE=Debug` (Q_ASSERT jadi no-op, qDebug() default
-    # hilang lewat covertLogLevel() di main.cpp) walau user sengaja minta
-    # build Debug.
+    # Preprocessor Definitions
+    add_compile_definitions(NDEBUG QT_NO_DEBUG)
 
     # Linker Flags (_link)
-    # mold hanya dipakai kalau memang ter-install; kalau tidak ada, fallback
-    # ke linker default toolchain daripada gagal total di tahap link.
-    find_program(QSC_MOLD_LINKER NAMES mold ld.mold)
-    if (QSC_MOLD_LINKER)
-        message(STATUS "[${PROJECT_NAME}] mold linker found, using it")
-        add_link_options(-fuse-ld=mold)
-    else()
-        message(STATUS "[${PROJECT_NAME}] mold linker not found, using toolchain default (install with e.g. 'sudo pacman -S mold' on Arch/CachyOS)")
-    endif()
-
     add_link_options(
+        -fuse-ld=mold
         -Wl,-O3
         -Wl,--gc-sections
         -Wl,--icf=all
@@ -166,11 +152,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT MSVC)
         -fno-math-errno -fno-trapping-math
     )
 
-    # NDEBUG/QT_NO_DEBUG sengaja tidak di-hardcode di sini juga (lihat
-    # penjelasan di blok Linux di atas) — biar CMAKE_BUILD_TYPE=Debug tetap
-    # benar-benar Debug. NOMINMAX/WIN32_LEAN_AND_MEAN bukan build-type-specific
-    # (cuma windows-header hygiene) jadi tetap unconditional.
-    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_compile_definitions(NDEBUG QT_NO_DEBUG NOMINMAX WIN32_LEAN_AND_MEAN)
 
     add_link_options(
         -Wl,--gc-sections
@@ -439,22 +421,6 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     get_target_property(QSC_BIN_OUTPUT_PATH ${PROJECT_NAME} RUNTIME_OUTPUT_DIRECTORY)
     set(QSC_DEPLOY_PATH ${QSC_BIN_OUTPUT_PATH})
-
-    find_package(mimalloc CONFIG QUIET)
-    if (mimalloc_FOUND)
-        target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc)
-        # Force include header override
-        target_compile_definitions(${PROJECT_NAME} PRIVATE MIMALLOC_NEW_DELETE)
-    else()
-        # Fall back to the bare linker-search-path name, matching the
-        # project's prior behavior for setups (e.g. a manually-configured
-        # MSVC + vcpkg tree) where mimalloc doesn't ship its own CMake
-        # config but the .lib is discoverable via a standard library path.
-        message(STATUS "[${PROJECT_NAME}] mimalloc CONFIG package not found, "
-                        "falling back to bare '-lmimalloc' linking")
-        target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc)
-        target_compile_definitions(${PROJECT_NAME} PRIVATE MIMALLOC_NEW_DELETE)
-    endif()
 
     target_link_libraries(${PROJECT_NAME} PRIVATE dwmapi)
 

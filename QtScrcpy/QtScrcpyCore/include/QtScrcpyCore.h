@@ -115,15 +115,6 @@ signals:
 public:
     virtual void setUserData(void* data) = 0;
     virtual void* getUserData() = 0;
-    // KONTRAK PENTING: observer TIDAK BOLEH memanggil registerDeviceObserver()/
-    // deRegisterDeviceObserver() secara sinkron dari dalam callback
-    // DeviceObserver miliknya sendiri (mis. dari dalam mouseEvent()/keyEvent()
-    // dkk yang dipanggil Device). Implementasinya pakai std::shared_mutex yang
-    // TIDAK reentrant: shared_lock (dipegang Device selama iterasi observer)
-    // lalu upgrade ke exclusive lock di thread yang sama = UB/berpotensi
-    // deadlock (audit §4.4). Kalau perlu (de)register akibat sebuah event,
-    // defer lewat QMetaObject::invokeMethod(..., Qt::QueuedConnection) atau
-    // sejenisnya supaya baru dieksekusi setelah callback ini selesai.
     virtual void registerDeviceObserver(DeviceObserver* observer) = 0;
     virtual void deRegisterDeviceObserver(DeviceObserver* observer) = 0;
     virtual void registerFrameSink(FrameSink* sink) = 0;

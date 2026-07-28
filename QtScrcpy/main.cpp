@@ -19,9 +19,6 @@
 #include "mousetap/mousetap.h"
 #include "adbprocess.h"
 #include "qtscrcpytelemetry.h"
-#ifdef Q_OS_WIN
-#include <mimalloc-new-delete.h>
-#endif
 
 #ifndef QTSCRCPY_VERSION
 #define QTSCRCPY_VERSION "0.0.0"
@@ -157,7 +154,25 @@ int main(int argc, char *argv[])
 void installTranslator()
 {
     static QTranslator translator;
-    const QString languagePath = QStringLiteral(":/i18n/en_US.qm");
+    QLocale locale;
+    QLocale::Language language = locale.language();
+
+    QString configLang = Config::getInstance().getLanguage();
+    if (configLang == "zh_CN") {
+        language = QLocale::Chinese;
+    } else if (configLang == "en_US") {
+        language = QLocale::English;
+    } else if (configLang == "ja_JP") {
+        language = QLocale::Japanese;
+    }
+
+    QString languagePath = ":/i18n/";
+    switch (language) {
+    case QLocale::English:
+    default:
+        languagePath += "en_US.qm";
+        break;
+    }
 
     if (!translator.load(languagePath)) {
         qWarning() << "Failed to load translation file:" << languagePath;

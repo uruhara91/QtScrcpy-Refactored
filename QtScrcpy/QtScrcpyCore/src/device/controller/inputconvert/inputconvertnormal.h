@@ -7,12 +7,12 @@ class InputConvertNormal : public InputConvertBase
 {
     Q_OBJECT
 public:
-    explicit InputConvertNormal(Controller *controller);
-    ~InputConvertNormal() override;
+    InputConvertNormal(Controller *controller);
+    virtual ~InputConvertNormal();
 
-    void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize) override;
-    void wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize) override;
-    void keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize) override;
+    virtual void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize);
+    virtual void wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize);
+    virtual void keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize);
 
 private:
     AndroidMotioneventButtons convertMouseButtons(Qt::MouseButtons buttonState);

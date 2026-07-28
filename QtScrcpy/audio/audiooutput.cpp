@@ -1,5 +1,4 @@
 #include "audiooutput.h"
-#include "adbprocess.h"
 #include "qtscrcpytelemetry.h"
 
 #include <QAudioFormat>
@@ -413,10 +412,8 @@ struct ScrcpyAudioWorker::Impl
         localPort = newPort;
         localServerPath = newServerPath;
         serverVersion = newServerVersion;
-        // Pakai resolusi yang sama dengan jalur video/control (Config "AdbPath"
-        // -> env QTSCRCPY_ADB_PATH -> <appdir>/adb) supaya audio tidak diam-diam
-        // pakai binary adb yang berbeda dari video (audit §3.3).
-        adbPath = qsc::AdbProcess::getAdbPath();
+        adbPath = QString::fromLocal8Bit(qgetenv("QTSCRCPY_ADB_PATH"));
+        if (adbPath.isEmpty()) adbPath = QStringLiteral("adb");
 
         const quint32 scid =
             QRandomGenerator::global()->generate() & 0x7fffffffU;

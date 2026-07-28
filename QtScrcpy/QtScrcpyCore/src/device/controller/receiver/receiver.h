@@ -9,8 +9,8 @@ class Receiver : public QObject
 {
     Q_OBJECT
 public:
-    explicit Receiver(QObject *parent = nullptr);
-    ~Receiver() override;
+    explicit Receiver(QObject *parent = Q_NULLPTR);
+    virtual ~Receiver();
 
     void recvDeviceMsg(DeviceMsg *deviceMsg);
 };

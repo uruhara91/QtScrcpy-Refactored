@@ -3,7 +3,7 @@
 
 #include <QObject>
 #include <QVector>
-#include <span>
+#include <span> // <--- Tambahkan ini
 
 #include "QtScrcpyCore.h"
 

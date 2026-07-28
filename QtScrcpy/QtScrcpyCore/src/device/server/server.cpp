@@ -1,9 +1,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QElapsedTimer>
-#include <QEventLoop>
 #include <QFileInfo>
-#include <QPointer>
 #include <QThread>
 #include <QTimer>
 #include <QTimerEvent>
@@ -37,108 +35,16 @@ static QString shellQuote(QString value)
     return QLatin1Char('\'') + value + QLatin1Char('\'');
 }
 
-namespace {
-
-// Non-blocking pengganti QAbstractSocket::waitForConnected()/waitForReadyRead().
-//
-// waitForConnected()/waitForReadyRead() memblokir thread pemanggil di level
-// socket TANPA memompa event loop Qt. Server selalu hidup di GUI thread, jadi
-// setiap pemanggilan itu bikin seluruh UI (repaint, input, device lain yang
-// sudah connect) macet sampai socket ready atau timeout (audit §3.5).
-//
-// Helper ini menunggu lewat QEventLoop lokal: signal socket (connected/
-// readyRead/errorOccurred/disconnected) atau timer guard men-quit loop.
-// QEventLoop::exec() tetap memompa event loop Qt selama menunggu, jadi GUI
-// tidak freeze. Perilaku dari sudut pandang caller tetap sama seperti
-// waitFor*() asli: synchronous, return bool, sampai socket ready/timeout.
-//
-// QPointer di sini WAJIB, bukan sekadar jaga-jaga: karena event loop lokal
-// ini memompa event lain, ada kemungkinan (walau jarang) sesuatu yang lain
-// menghapus socket ini di tengah tunggu (mis. Server::stop() ke-trigger dari
-// aksi UI yang kebetulan diproses loop ini). waitForReadyRead() versi asli
-// tidak punya risiko ini sama sekali karena tidak ada kode lain yang bisa
-// jalan selagi ia blocking.
-bool waitForConnectedNonBlocking(QAbstractSocket *socket, int timeoutMs)
-{
-    if (!socket) return false;
-    if (socket->state() == QAbstractSocket::ConnectedState) return true;
-
-    QPointer<QAbstractSocket> guarded(socket);
-    QEventLoop loop;
-    QTimer guardTimer;
-    guardTimer.setSingleShot(true);
-    QObject::connect(socket, &QAbstractSocket::connected, &loop, &QEventLoop::quit);
-    QObject::connect(socket, &QAbstractSocket::errorOccurred, &loop, &QEventLoop::quit);
-    QObject::connect(&guardTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    guardTimer.start(timeoutMs);
-    loop.exec();
-
-    if (!guarded) return false; // socket dihapus selagi menunggu
-    return guarded->state() == QAbstractSocket::ConnectedState;
-}
-
-bool waitForReadyReadNonBlocking(QAbstractSocket *socket, int timeoutMs)
-{
-    if (!socket) return false;
-    if (socket->bytesAvailable() > 0) return true;
-
-    QPointer<QAbstractSocket> guarded(socket);
-    QEventLoop loop;
-    QTimer guardTimer;
-    guardTimer.setSingleShot(true);
-    QObject::connect(socket, &QAbstractSocket::readyRead, &loop, &QEventLoop::quit);
-    QObject::connect(socket, &QAbstractSocket::disconnected, &loop, &QEventLoop::quit);
-    QObject::connect(&guardTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    guardTimer.start(timeoutMs);
-    loop.exec();
-
-    if (!guarded) return false; // socket dihapus selagi menunggu
-    return guarded->bytesAvailable() > 0;
-}
-
-} // namespace
-
 Server::Server(QObject *parent) : QObject(parent)
 {
     connect(&m_workProcess, &qsc::AdbProcess::adbProcessResult, this, &Server::onWorkProcessResult);
     connect(&m_serverProcess, &qsc::AdbProcess::adbProcessResult, this, &Server::onWorkProcessResult);
 
     connect(&m_serverSocket, &QTcpServer::newConnection, this, [this]() {
-        // readInfo() di bawah memompa nested QEventLoop (lihat
-        // waitForReadyReadNonBlocking()) selagi menunggu handshake byte dari
-        // device. Event lain bisa ikut diproses selama loop lokal itu jalan,
-        // termasuk klik "disconnect" di UI yang berujung ke
-        // DeviceManage::disconnectDevice() -> delete device.data() SINKRON,
-        // yang lewat unique_ptr<Server> milik Device ikut men-destroy `this`
-        // di tengah stack call ini sendiri. readInfo() sudah guard dirinya
-        // sendiri lewat selfGuard dan pulang aman (return false) begitu itu
-        // terjadi, tapi TANPA re-check di sini, kode di bawah bakal lanjut
-        // menyentuh `this` yang sudah freed -> use-after-free (mis. crash di
-        // dalam QProcess::state() lewat stop() -> m_workProcess.isRuning()).
-        // emit serverStarted(...) juga bisa memicu destruksi `this` lewat
-        // receiver-nya, jadi guard dicek lagi setelahnya sebelum
-        // stopAcceptTimeoutTimer().
-        QPointer<Server> selfGuard(this);
-
         QTcpSocket *tmp = m_serverSocket.nextPendingConnection();
-        // Accept sudah terjadi (entah video atau control) - "apakah device
-        // pernah connect sama sekali" sudah terjawab, jadi timer accept 1
-        // detik ini harus berhenti di sini juga, bukan cuma di cabang
-        // control socket. Kalau tidak, timer ini masih bisa nge-fire while
-        // readInfo() di bawah masih dalam budget nunggu-nya sendiri (3
-        // detik) untuk video socket, dan reentrant lewat nested event loop
-        // readInfo() bisa menghancurkan Server ini di tengah proses -
-        // menyebabkan setiap attempt yang butuh > 1 detik untuk device
-        // connect balik SELALU digagalkan, apapun jumlah retry-nya.
-        stopAcceptTimeoutTimer();
         if (dynamic_cast<VideoSocket *>(tmp)) {
             m_videoSocket = dynamic_cast<VideoSocket *>(tmp);
-            const bool ok = m_videoSocket->isValid() && readInfo(m_videoSocket, m_deviceName);
-            if (!selfGuard) {
-                qInfo("newConnection(video) aborted: server destroyed while waiting");
-                return;
-            }
-            if (!ok) {
+            if (!m_videoSocket->isValid() || !readInfo(m_videoSocket, m_deviceName)) {
                 stop();
                 emit serverStarted(false);
             }
@@ -158,10 +64,6 @@ Server::Server(QObject *parent) : QObject(parent)
             } else {
                 stop();
                 emit serverStarted(false);
-            }
-            if (!selfGuard) {
-                qInfo("newConnection(control) aborted: server destroyed by serverStarted() receiver");
-                return;
             }
             stopAcceptTimeoutTimer();
         }
@@ -256,12 +158,7 @@ bool Server::execute()
     }
     QStringList args;
     // args << "shell";
-    // shellQuote() tiap field string bebas (bukan cuma seluruh blok su -c)
-    // supaya value yang mengandung spasi/karakter shell tidak memecah
-    // argumen atau ditafsirkan sebagai sintaks shell oleh remote shell di
-    // device -- berlaku utk root maupun non-root, karena keduanya sama-sama
-    // dikirim sebagai satu string ke `adb shell` (audit §4.7).
-    args << QString("CLASSPATH=%1").arg(shellQuote(m_params.serverRemotePath));
+    args << QString("CLASSPATH=%1").arg(m_params.serverRemotePath);
     args << "app_process";
 
 #ifdef SERVER_DEBUGGER
@@ -280,14 +177,14 @@ bool Server::execute()
 
         args << "/"; // unused;
     args << "com.genymobile.scrcpy.Server";
-    args << shellQuote(m_params.serverVersion);
+    args << m_params.serverVersion;
 
     args << QString("video_bit_rate=%1").arg(QString::number(m_params.bitRate));
     const QString serverLogLevel = qsc::telemetry::enabled()
         ? QStringLiteral("debug")
         : m_params.logLevel;
     if (!serverLogLevel.isEmpty()) {
-        args << QString("log_level=%1").arg(shellQuote(serverLogLevel));
+        args << QString("log_level=%1").arg(serverLogLevel);
     }
     if (m_params.maxSize > 0) {
         args << QString("max_size=%1").arg(QString::number(m_params.maxSize));
@@ -310,7 +207,7 @@ bool Server::execute()
         args << QString("tunnel_forward=true");
     }
     if (!m_params.crop.isEmpty()) {
-        args << QString("crop=%1").arg(shellQuote(m_params.crop));
+        args << QString("crop=%1").arg(m_params.crop);
     }
     if (!m_params.control) {
         args << QString("control=false");
@@ -326,10 +223,10 @@ bool Server::execute()
     // https://github.com/Genymobile/scrcpy/commit/080a4ee3654a9b7e96c8ffe37474b5c21c02852a
     // <https://d.android.com/reference/android/media/MediaFormat>
     if (!m_params.codecOptions.isEmpty()) {
-        args << QString("video_codec_options=%1").arg(shellQuote(m_params.codecOptions));
+        args << QString("video_codec_options=%1").arg(m_params.codecOptions);
     }
     if (!m_params.codecName.isEmpty()) {
-        args << QString("video_encoder=%1").arg(shellQuote(m_params.codecName));
+        args << QString("video_encoder=%1").arg(m_params.codecName);
     }
     args << "audio=false";
     // 服务端默认-1，可不传
@@ -563,30 +460,15 @@ bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName)
     constexpr qint64 timeoutMs = 3000;
     std::array<quint8, static_cast<std::size_t>(infoSize)> buf{};
 
-    // Lihat komentar di waitForReadyReadNonBlocking(): loop di bawah ini
-    // memompa event loop Qt selagi menunggu, jadi kode lain (mis.
-    // Server::stop() lewat aksi disconnect di UI) berpotensi menghapus
-    // `this` atau `videoSocket` di tengah tunggu. Guard ini dicek sebelum
-    // menyentuh keduanya lagi setiap kali sehabis menunggu.
-    QPointer<Server> selfGuard(this);
-    QPointer<VideoSocket> socketGuard(videoSocket);
-
     QElapsedTimer timer;
     timer.start();
     qint64 totalRead = 0;
     while (totalRead < infoSize) {
         if (videoSocket->bytesAvailable() <= 0) {
             const qint64 remaining = timeoutMs - timer.elapsed();
-            bool gotReady = false;
-            if (remaining > 0) {
-                gotReady = waitForReadyReadNonBlocking(
-                    videoSocket, static_cast<int>(std::min<qint64>(300, remaining)));
-            }
-            if (!selfGuard || !socketGuard) {
-                qInfo("readInfo aborted: server or socket destroyed while waiting");
-                return false;
-            }
-            if (!gotReady) {
+            if (remaining <= 0 ||
+                !videoSocket->waitForReadyRead(
+                    static_cast<int>(std::min<qint64>(300, remaining)))) {
                 if (timer.elapsed() >= timeoutMs ||
                     videoSocket->state() != QAbstractSocket::ConnectedState) {
                     qInfo("readInfo timeout or disconnect");
@@ -607,8 +489,6 @@ bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName)
         totalRead += chunk;
     }
     qDebug() << "readInfo wait time:" << timer.elapsed();
-
-    if (!selfGuard) return false;
 
     buf[DEVICE_NAME_FIELD_LENGTH - 1] = '\0';
     deviceName = QString::fromUtf8(
@@ -701,18 +581,6 @@ void Server::onConnectTimer()
         }
     };
 
-    // Server (this) bisa dihapus di tengah tunggu non-blocking di bawah
-    // (mis. user klik disconnect selagi event loop lokal ini kebetulan
-    // memproses event UI itu) — lihat komentar di waitForConnectedNonBlocking().
-    // videoSocket/controlSocket sendiri TIDAK perlu guard terpisah: keduanya
-    // unique_ptr lokal yang belum di-assign ke m_videoSocket/m_controlSocket
-    // atau di-expose lewat signal apa pun, jadi tidak ada kode lain yang bisa
-    // menghapusnya di tengah jalan selain scope function ini sendiri.
-    QPointer<Server> selfGuard(this);
-    auto safeFail = [&selfGuard, &failAttempt](const char *stage) {
-        if (selfGuard) failAttempt(stage);
-    };
-
     // Match upstream scrcpy's forward handshake: connect only the first
     // (video) socket and wait for the server dummy byte. Opening the control
     // socket before this probe succeeds creates needless stale connections
@@ -722,26 +590,20 @@ void Server::onConnectTimer()
     videoSocket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
     videoSocket->connectToHost(QHostAddress::LocalHost, m_params.localPort);
 
-    const bool videoConnected = waitForConnectedNonBlocking(videoSocket.get(), CONNECT_PROBE_TIMEOUT_MS);
-    if (!selfGuard) return;
-    if (!videoConnected) {
-        safeFail("video-connect");
+    if (!videoSocket->waitForConnected(CONNECT_PROBE_TIMEOUT_MS)) {
+        failAttempt("video-connect");
         return;
     }
 
-    bool gotDummyByte = videoSocket->bytesAvailable() >= 1;
-    if (!gotDummyByte) {
-        gotDummyByte = waitForReadyReadNonBlocking(videoSocket.get(), CONNECT_PROBE_TIMEOUT_MS);
-        if (!selfGuard) return;
-    }
-    if (!gotDummyByte) {
-        safeFail("dummy-byte");
+    if (videoSocket->bytesAvailable() < 1 &&
+        !videoSocket->waitForReadyRead(CONNECT_PROBE_TIMEOUT_MS)) {
+        failAttempt("dummy-byte");
         return;
     }
 
     const QByteArray dummy = videoSocket->read(1);
     if (dummy.size() != 1) {
-        safeFail("dummy-byte");
+        failAttempt("dummy-byte");
         return;
     }
 
@@ -751,19 +613,16 @@ void Server::onConnectTimer()
     controlSocket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
     controlSocket->setSocketOption(QAbstractSocket::KeepAliveOption, 1);
     controlSocket->connectToHost(QHostAddress::LocalHost, m_params.localPort);
-    const bool controlConnected = waitForConnectedNonBlocking(controlSocket.get(), 1000);
-    if (!selfGuard) return;
-    if (!controlConnected) {
-        safeFail("control-connect");
+    if (!controlSocket->waitForConnected(1000)) {
+        failAttempt("control-connect");
         return;
     }
 
     QString deviceName;
     if (!readInfo(videoSocket.get(), deviceName)) {
-        safeFail("device-info");
+        failAttempt("device-info");
         return;
     }
-    if (!selfGuard) return;
 
     const qint64 connectedMs = m_forwardConnectElapsed.isValid()
         ? m_forwardConnectElapsed.elapsed()
@@ -816,7 +675,6 @@ void Server::onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult)
                     // client can listen before starting the server app, so there is no need to
                     // try to connect until the server socket is listening on the device.
                     m_serverSocket.setMaxPendingConnections(2);
-                    m_serverSocket.resetSocketSequence(); // audit §4.5
                     if (!m_serverSocket.listen(QHostAddress::LocalHost, m_params.localPort)) {
                         qCritical() << QString("Could not listen on port %1").arg(m_params.localPort).toStdString().c_str();
                         m_serverStartStep = SSS_NULL;

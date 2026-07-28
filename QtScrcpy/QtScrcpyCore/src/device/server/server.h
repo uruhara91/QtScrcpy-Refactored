@@ -58,7 +58,7 @@ public:
     };
 
     explicit Server(QObject *parent = nullptr);
-    ~Server() override;
+    virtual ~Server();
 
     bool start(Server::ServerParams params);
     void stop();
@@ -80,7 +80,7 @@ private slots:
     void onWorkProcessResult(qsc::AdbProcess::ADB_EXEC_RESULT processResult);
 
 protected:
-    void timerEvent(QTimerEvent *event) override;
+    void timerEvent(QTimerEvent *event);
 
 private:
     bool pushServer();

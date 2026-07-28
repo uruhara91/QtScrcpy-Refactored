@@ -42,18 +42,7 @@ template <typename T>
 T readBigEndian(const quint8 *buf) {
     T value;
     std::memcpy(&value, buf, sizeof(T));
-    // Wire format (protokol scrcpy) selalu big-endian. byteswap cuma benar
-    // kalau host little-endian -- di host big-endian, byte hasil memcpy
-    // sudah dalam urutan yang benar apa adanya. byteswap tanpa cek ini salah
-    // di host big-endian (audit §4.2). Tidak berdampak di x86_64/ARM64 milik
-    // kamu (keduanya little-endian) tapi ini bug portabilitas yang nyata.
-    if constexpr (std::endian::native == std::endian::big) {
-        return value;
-    } else {
-        static_assert(std::endian::native == std::endian::little,
-                      "Mixed-endian host tidak didukung");
-        return std::byteswap(value);
-    }
+    return std::byteswap(value);
 }
 }
 

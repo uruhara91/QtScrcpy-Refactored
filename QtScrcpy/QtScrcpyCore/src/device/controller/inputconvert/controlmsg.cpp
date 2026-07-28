@@ -113,8 +113,8 @@ void ControlMsg::setInjectTextMsgData(const QString &text)
     const QByteArray utf8 = truncateUtf8(text, CONTROL_MSG_INJECT_TEXT_MAX_LENGTH);
     if (utf8.isEmpty()) return;
 
-    m_data.injectText.text = new char[utf8.size()];
     m_data.injectText.length = static_cast<quint32>(utf8.size());
+    m_data.injectText.text = new char[utf8.size()];
     std::memcpy(m_data.injectText.text, utf8.constData(),
                 static_cast<std::size_t>(utf8.size()));
 }
@@ -162,8 +162,8 @@ void ControlMsg::setSetClipboardMsgData(const QString &text, bool paste)
     const QByteArray utf8 = truncateUtf8(text, CONTROL_MSG_CLIPBOARD_TEXT_MAX_LENGTH);
     if (utf8.isEmpty()) return;
 
-    m_data.setClipboard.text = new char[utf8.size()];
     m_data.setClipboard.length = static_cast<quint32>(utf8.size());
+    m_data.setClipboard.text = new char[utf8.size()];
     std::memcpy(m_data.setClipboard.text, utf8.constData(),
                 static_cast<std::size_t>(utf8.size()));
 }

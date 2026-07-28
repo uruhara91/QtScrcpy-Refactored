@@ -13,8 +13,8 @@ class InputConvertBase : public QObject
 {
     Q_OBJECT
 public:
-    explicit InputConvertBase(Controller *controller);
-    ~InputConvertBase() override;
+    InputConvertBase(Controller *controller);
+    virtual ~InputConvertBase();
 
     // the frame size may be different from the real device size, so we need the size
     // to which the absolute position apply, to scale it accordingly

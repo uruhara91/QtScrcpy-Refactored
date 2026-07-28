@@ -77,6 +77,8 @@ set(QSC_DEVICE_SOURCES
     src/device/android/keycodes.h
     src/device/controller/controller.h
     src/device/controller/controller.cpp
+    src/device/controller/bufferutil.h
+    src/device/controller/bufferutil.cpp
     src/device/controller/inputconvert/inputconvertbase.h
     src/device/controller/inputconvert/inputconvertbase.cpp
     src/device/controller/inputconvert/inputconvertnormal.h
@@ -165,14 +167,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswresample.a
         secur32 bcrypt mfplat mfuuid ole32 strmiids
     )
-    # See root CMakeLists.txt's Windows block for why find_package() is
-    # preferred over a bare "mimalloc" linker-search-path name where
-    # available. QtScrcpyCore is a STATIC library consumed by the main
-    # QtScrcpy target (see root CMakeLists.txt), so this must be a PUBLIC
-    # link regardless of whether the CONFIG package was found, for the
-    # symbols to propagate transitively to that consumer.
-    find_package(mimalloc CONFIG QUIET)
-    target_link_libraries(QtScrcpyCore PUBLIC mimalloc)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")

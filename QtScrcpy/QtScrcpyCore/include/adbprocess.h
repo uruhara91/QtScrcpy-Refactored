@@ -2,7 +2,6 @@
 #define ADBPROCESS_H
 
 #include <QObject>
-#include <memory>
 
 class AdbProcessImpl;
 namespace qsc {
@@ -22,14 +21,9 @@ public:
     };
 
     explicit AdbProcess(QObject *parent = nullptr);
-    ~AdbProcess() override;
+    virtual ~AdbProcess();
 
     static void setAdbPath(const QString& adbPath);
-    // Resolusi path adb yang sama persis dengan yang dipakai jalur video/control
-    // (Config "AdbPath" -> env QTSCRCPY_ADB_PATH -> <appdir>/adb). Modul lain
-    // (mis. audio) HARUS memakai ini, bukan reimplementasi resolusinya sendiri,
-    // supaya "AdbPath" custom dari Config konsisten dipakai di semua jalur.
-    static const QString& getAdbPath();
 
     void execute(const QString &serial, const QStringList &args);
     void forward(const QString &serial, quint16 localPort, const QString &deviceSocketName);
@@ -53,7 +47,7 @@ signals:
     void adbProcessResult(ADB_EXEC_RESULT processResult);
 
 private:
-    std::unique_ptr<AdbProcessImpl> m_adbImpl;
+    AdbProcessImpl* m_adbImpl = nullptr;
 };
 
 }

@@ -104,10 +104,31 @@ Server::Server(QObject *parent) : QObject(parent)
     connect(&m_serverProcess, &qsc::AdbProcess::adbProcessResult, this, &Server::onWorkProcessResult);
 
     connect(&m_serverSocket, &QTcpServer::newConnection, this, [this]() {
+        // readInfo() di bawah memompa nested QEventLoop (lihat
+        // waitForReadyReadNonBlocking()) selagi menunggu handshake byte dari
+        // device. Event lain bisa ikut diproses selama loop lokal itu jalan,
+        // termasuk klik "disconnect" di UI yang berujung ke
+        // DeviceManage::disconnectDevice() -> delete device.data() SINKRON,
+        // yang lewat unique_ptr<Server> milik Device ikut men-destroy `this`
+        // di tengah stack call ini sendiri. readInfo() sudah guard dirinya
+        // sendiri lewat selfGuard dan pulang aman (return false) begitu itu
+        // terjadi, tapi TANPA re-check di sini, kode di bawah bakal lanjut
+        // menyentuh `this` yang sudah freed -> use-after-free (mis. crash di
+        // dalam QProcess::state() lewat stop() -> m_workProcess.isRuning()).
+        // emit serverStarted(...) juga bisa memicu destruksi `this` lewat
+        // receiver-nya, jadi guard dicek lagi setelahnya sebelum
+        // stopAcceptTimeoutTimer().
+        QPointer<Server> selfGuard(this);
+
         QTcpSocket *tmp = m_serverSocket.nextPendingConnection();
         if (dynamic_cast<VideoSocket *>(tmp)) {
             m_videoSocket = dynamic_cast<VideoSocket *>(tmp);
-            if (!m_videoSocket->isValid() || !readInfo(m_videoSocket, m_deviceName)) {
+            const bool ok = m_videoSocket->isValid() && readInfo(m_videoSocket, m_deviceName);
+            if (!selfGuard) {
+                qInfo("newConnection(video) aborted: server destroyed while waiting");
+                return;
+            }
+            if (!ok) {
                 stop();
                 emit serverStarted(false);
             }
@@ -127,6 +148,10 @@ Server::Server(QObject *parent) : QObject(parent)
             } else {
                 stop();
                 emit serverStarted(false);
+            }
+            if (!selfGuard) {
+                qInfo("newConnection(control) aborted: server destroyed by serverStarted() receiver");
+                return;
             }
             stopAcceptTimeoutTimer();
         }

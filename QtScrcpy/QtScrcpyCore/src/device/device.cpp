@@ -227,15 +227,38 @@ void Device::initSignals()
             if (QTcpSocket *socket = m_server->getControlSocket()) {
                 connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
                     if (!m_controller) return;
+                    // Peek once per invocation instead of once per message:
+                    // re-peeking the full buffer on every loop iteration
+                    // copies everything already seen this call over and
+                    // over. sliced() below shares the underlying buffer
+                    // (no extra copy) since we only ever read from it.
+                    const QByteArray bytes = socket->peek(socket->bytesAvailable());
+                    qint32 offset = 0;
                     int quota = 60;
-                    while (socket->bytesAvailable() > 0 && quota-- > 0) {
-                        const QByteArray bytes = socket->peek(socket->bytesAvailable());
+                    bool protocolError = false;
+                    while (offset < bytes.size() && quota-- > 0) {
                         DeviceMsg message;
-                        const qint32 consumed = message.deserialize(bytes);
-                        if (consumed <= 0) break;
-                        socket->read(consumed);
+                        const qint32 consumed = message.deserialize(bytes.sliced(offset));
+                        if (consumed < 0) {
+                            // Malformed/unexpected data: the same bad prefix
+                            // will still be sitting unconsumed at the head
+                            // of the socket the next time readyRead fires,
+                            // so previously this silently wedged the whole
+                            // control channel forever (clipboard sync dead,
+                            // socket buffer growing unbounded) rather than
+                            // surfacing an error. Treat it as a desynced
+                            // connection and drop it instead of retrying.
+                            qWarning("Device control channel: malformed message, "
+                                     "closing connection to resync");
+                            protocolError = true;
+                            break;
+                        }
+                        if (consumed == 0) break; // need more bytes, wait for next readyRead
+                        offset += consumed;
                         m_controller->recvDeviceMsg(&message);
                     }
+                    if (offset > 0) socket->read(offset);
+                    if (protocolError) socket->close();
                 });
             }
 

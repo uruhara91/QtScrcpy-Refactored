@@ -73,7 +73,19 @@ int main(int argc, char *argv[])
 #endif
 
 #ifdef Q_OS_LINUX
-    qputenv("QTSCRCPY_ADB_PATH", QByteArrayLiteral("/usr/bin/adb"));
+    // Respect an ADB path the user already exported (e.g. because their
+    // SDK's platform-tools isn't on PATH), and otherwise look it up via
+    // PATH instead of assuming /usr/bin/adb -- adb is just as commonly
+    // installed under ~/Android/Sdk/platform-tools, via snap/flatpak, or a
+    // manually downloaded platform-tools zip, none of which land in
+    // /usr/bin. Only fall back to /usr/bin/adb if PATH lookup also fails,
+    // to preserve the previous behavior on systems that do have it there
+    // (e.g. Arch/CachyOS's android-tools package).
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_ADB_PATH")) {
+        const QString pathAdb = QStandardPaths::findExecutable(QStringLiteral("adb"));
+        qputenv("QTSCRCPY_ADB_PATH",
+                (pathAdb.isEmpty() ? QStringLiteral("/usr/bin/adb") : pathAdb).toLocal8Bit());
+    }
     qputenv("QTSCRCPY_SERVER_PATH", (appPath + "/scrcpy-server").toLocal8Bit());
     qputenv("QTSCRCPY_KEYMAP_PATH", (appPath + "/keymap").toLocal8Bit());
     qputenv("QTSCRCPY_CONFIG_PATH", (appPath + "/config").toLocal8Bit());

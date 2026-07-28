@@ -812,15 +812,15 @@ struct ScrcpyAudioWorker::Impl
         }
         audioSink = new QAudioSink(device, format, q);
         QObject::connect(audioSink, &QAudioSink::stateChanged, q,
-                         [this](QtAudio::State state) {
+                         [this](QAudio::State state) {
             if (!active || stopping) return;
-            if (state == QtAudio::IdleState &&
+            if (state == QAudio::IdleState &&
                 playbackElapsed.isValid() &&
                 playbackElapsed.elapsed() >= STARTUP_RECOVERY_WINDOW_MS) {
                 ++sinkUnderruns;
             }
-            if (state == QtAudio::StoppedState &&
-                audioSink && audioSink->error() != QtAudio::NoError) {
+            if (state == QAudio::StoppedState &&
+                audioSink && audioSink->error() != QAudio::NoError) {
                 ++sinkErrors;
                 qWarning() << "[Audio] Output sink error:"
                            << static_cast<int>(audioSink->error());

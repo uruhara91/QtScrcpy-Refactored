@@ -203,20 +203,46 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(FFMPEG_STATIC_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib")
+    set(FFMPEG_STATIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/include")
 
-    target_include_directories(${QSC_PROJECT_NAME} PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/include
-    )
-
-    target_link_libraries(${QSC_PROJECT_NAME} PUBLIC
-        ${FFMPEG_STATIC_LIB_DIR}/libavformat.a
-        ${FFMPEG_STATIC_LIB_DIR}/libavcodec.a
-        ${FFMPEG_STATIC_LIB_DIR}/libavutil.a
-        ${FFMPEG_STATIC_LIB_DIR}/libswscale.a
-        ${FFMPEG_STATIC_LIB_DIR}/libswresample.a
-        pthread
-        z
-    )
+    # Two supported ways to get FFmpeg on Linux:
+    #  1) A bundled static build under src/third_party/ffmpeg/{include,lib}
+    #     (matches how Windows/macOS are set up here, and how
+    #     ci/linux/package_appimage.sh expects to produce a self-contained
+    #     AppImage). This is opt-in: it only activates if that directory
+    #     actually exists, since it is NOT checked into the repo.
+    #  2) System FFmpeg via pkg-config, e.g. `pacman -S ffmpeg` on
+    #     CachyOS/Arch or `apt install libavcodec-dev libavformat-dev
+    #     libavutil-dev libswscale-dev libswresample-dev` on Debian/Ubuntu.
+    #     This is the default now: previously this file unconditionally
+    #     pointed at (1) even when it didn't exist, which made a fresh
+    #     `cmake --build .` fail immediately with "no rule to make target
+    #     .../third_party/ffmpeg/lib/libavformat.a" on every distro build
+    #     that doesn't pre-stage a static FFmpeg (i.e. every distro build).
+    if(EXISTS "${FFMPEG_STATIC_LIB_DIR}/libavformat.a")
+        message(STATUS "[${QSC_PROJECT_NAME}] Using bundled static FFmpeg at ${FFMPEG_STATIC_LIB_DIR}")
+        target_include_directories(${QSC_PROJECT_NAME} PUBLIC ${FFMPEG_STATIC_INCLUDE_DIR})
+        target_link_libraries(${QSC_PROJECT_NAME} PUBLIC
+            ${FFMPEG_STATIC_LIB_DIR}/libavformat.a
+            ${FFMPEG_STATIC_LIB_DIR}/libavcodec.a
+            ${FFMPEG_STATIC_LIB_DIR}/libavutil.a
+            ${FFMPEG_STATIC_LIB_DIR}/libswscale.a
+            ${FFMPEG_STATIC_LIB_DIR}/libswresample.a
+            pthread
+            z
+        )
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+            libavformat
+            libavcodec
+            libavutil
+            libswscale
+            libswresample
+        )
+        message(STATUS "[${QSC_PROJECT_NAME}] Using system FFmpeg via pkg-config (avformat ${FFMPEG_libavformat_VERSION}, avcodec ${FFMPEG_libavcodec_VERSION}, avutil ${FFMPEG_libavutil_VERSION})")
+        target_link_libraries(${QSC_PROJECT_NAME} PUBLIC PkgConfig::FFMPEG pthread)
+    endif()
 
     get_target_property(QSC_BIN_OUTPUT_PATH ${QSC_PROJECT_NAME} RUNTIME_OUTPUT_DIRECTORY)
     if(NOT QSC_BIN_OUTPUT_PATH)

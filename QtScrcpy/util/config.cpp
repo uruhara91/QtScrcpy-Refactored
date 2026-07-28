@@ -155,8 +155,6 @@ Config::Config(QObject *parent) : QObject(parent)
     m_settings->setIniCodec("UTF-8");
     m_userData->setIniCodec("UTF-8");
 #endif
-
-    qDebug()<<m_userData->childGroups();
 }
 
 Config &Config::getInstance()

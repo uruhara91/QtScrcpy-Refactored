@@ -554,7 +554,9 @@ void QYuvOpenGLWidget::paintGL()
     checkFences();
 
     const int selectedIndex = acquireNewestReadyFrame();
-    releaseStaleReadyFrames(selectedIndex);
+    if (selectedIndex >= 0) {
+        releaseStaleReadyFrames(selectedIndex);
+    }
 
     if (selectedIndex >= 0) {
         FrameBuffer &frame = m_frames[selectedIndex];

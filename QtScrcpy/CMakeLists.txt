@@ -90,17 +90,40 @@ if (NOT MSVC)
     # lots of warnings and all warnings as errors
     add_compile_options(-Wall -Wextra -pedantic -Werror)
 
-    # disable some warning
-    add_compile_options(-Wno-nested-anon-types -Wno-c++23-extensions -Wno-overloaded-virtual)
+    # -Wno-nested-anon-types and -Wno-c++23-extensions are Clang-specific
+    # spellings; GCC doesn't recognize them (it just notes them and moves
+    # on, so harmless there, but they don't do anything useful either).
+    # -Wno-overloaded-virtual is understood by both, so it stays common.
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-Wno-nested-anon-types -Wno-c++23-extensions)
+    endif()
+    add_compile_options(-Wno-overloaded-virtual)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    
+
+    # LTO flag spelling differs between compilers:
+    #  - Clang: -flto=full (whole-program) or -flto=thin
+    #  - GCC:   -flto (or -flto=N for an explicit parallel job count /
+    #           -flto=auto to let GCC pick); GCC does NOT understand
+    #           "-flto=full" and fails with a hard "unrecognized argument
+    #           to '-flto=' option" error, since -flto=full/thin was never
+    #           a GCC value. Previously this was hardcoded to
+    #           "-flto=full" for every non-MSVC compiler, which made the
+    #           build fail immediately on GCC -- the default compiler on
+    #           virtually every Linux distro, including CachyOS, unless
+    #           Clang is explicitly installed and selected.
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(QSC_LTO_FLAG "-flto=full")
+    else()
+        set(QSC_LTO_FLAG "-flto=auto")
+    endif()
+
     # Compiler Flags
     add_compile_options(
         -march=native -O3 -pipe -fno-plt
         -ffunction-sections -fdata-sections
-        -flto=full
+        ${QSC_LTO_FLAG}
         -fomit-frame-pointer -fno-unwind-tables
         -fno-asynchronous-unwind-tables -fno-semantic-interposition
         -fno-math-errno -fno-trapping-math
@@ -110,18 +133,32 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_compile_definitions(NDEBUG QT_NO_DEBUG)
 
     # Linker Flags (_link)
+    # NOTE: -fuse-ld=mold is only added if mold is actually installed (see
+    # find_program below). Hard-coding it unconditionally makes the build
+    # fail on any machine without mold (e.g. a fresh CachyOS/Arch install
+    # that hasn't pulled in the `mold` package) with an opaque
+    # "cannot find -fuse-ld=mold" linker error. Mirrors the Windows/Clang
+    # block further down, which already does this correctly.
+    find_program(QSC_MOLD_LINKER NAMES mold ld.mold)
     add_link_options(
-        -fuse-ld=mold
         -Wl,-O3
         -Wl,--gc-sections
-        -Wl,--icf=all
         -Wl,--sort-common
         -Wl,--as-needed
         -Wl,-z,relro
         -Wl,-z,now
         -Wl,--hash-style=gnu
-        -flto=full
+        ${QSC_LTO_FLAG}
     )
+    if (QSC_MOLD_LINKER)
+        message(STATUS "[${PROJECT_NAME}] mold linker found, using it")
+        # --icf (Identical Code Folding) is a mold/lld/gold feature; GNU ld
+        # (bfd), the default on many distros, rejects it outright. Only
+        # request it once mold is confirmed present.
+        add_link_options(-fuse-ld=mold -Wl,--icf=all)
+    else()
+        message(STATUS "[${PROJECT_NAME}] mold linker not found, using toolchain default (install 'mold' for faster links and ICF)")
+    endif()
 endif()
 
 # Windows built with Clang (MSYS2 CLANG64: llvm + ucrt + libc++), NOT MSVC.

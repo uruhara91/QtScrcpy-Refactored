@@ -522,24 +522,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 
     find_package(Threads REQUIRED)
-    find_package(mimalloc QUIET)
 
     target_link_libraries(${PROJECT_NAME} PRIVATE
         xcb
         Threads::Threads
     )
-    
-    if(mimalloc_FOUND)
-        target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc)
-        # Windows sudah pasang override operator new/delete secara eksplisit
-        # (main.cpp, #ifdef Q_OS_WIN -> <mimalloc-new-delete.h>). Di Linux,
-        # link mimalloc tanpa header override ini kemungkinan besar cuma
-        # ke-link tapi operator new/delete tetap lewat glibc malloc (§6 audit).
-        # Definisikan macro ini HANYA kalau mimalloc benar-benar ketemu, supaya
-        # main.cpp bisa include header override tanpa memaksa dependency
-        # mimalloc untuk mesin yang belum install paketnya.
-        target_compile_definitions(${PROJECT_NAME} PRIVATE QSC_HAVE_MIMALLOC)
-    endif()
 
     if (QSC_HAVE_WAYLAND_RELATIVE_POINTER)
         # Generates qwayland-relative-pointer-unstable-v1.{h,cpp} and

@@ -121,6 +121,16 @@ Server::Server(QObject *parent) : QObject(parent)
         QPointer<Server> selfGuard(this);
 
         QTcpSocket *tmp = m_serverSocket.nextPendingConnection();
+        // Accept sudah terjadi (entah video atau control) - "apakah device
+        // pernah connect sama sekali" sudah terjawab, jadi timer accept 1
+        // detik ini harus berhenti di sini juga, bukan cuma di cabang
+        // control socket. Kalau tidak, timer ini masih bisa nge-fire while
+        // readInfo() di bawah masih dalam budget nunggu-nya sendiri (3
+        // detik) untuk video socket, dan reentrant lewat nested event loop
+        // readInfo() bisa menghancurkan Server ini di tengah proses -
+        // menyebabkan setiap attempt yang butuh > 1 detik untuk device
+        // connect balik SELALU digagalkan, apapun jumlah retry-nya.
+        stopAcceptTimeoutTimer();
         if (dynamic_cast<VideoSocket *>(tmp)) {
             m_videoSocket = dynamic_cast<VideoSocket *>(tmp);
             const bool ok = m_videoSocket->isValid() && readInfo(m_videoSocket, m_deviceName);

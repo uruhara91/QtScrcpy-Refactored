@@ -228,6 +228,13 @@ bool Server::execute()
     if (!m_params.codecName.isEmpty()) {
         args << QString("video_encoder=%1").arg(m_params.codecName);
     }
+    // The client-side decoder (Decoder::open()) is hardcoded to
+    // AV_CODEC_ID_H264 -- it cannot decode H265/AV1. Request h264
+    // explicitly rather than relying on scrcpy-server's own default
+    // (which is not part of any documented compatibility contract and
+    // could change between server versions). This also keeps decode
+    // CPU cost down since we're not using hardware acceleration.
+    args << "video_codec=h264";
     args << "audio=false";
     // 服务端默认-1，可不传
     if (static_cast<quint32>(-1) != m_params.scid) {
@@ -494,11 +501,21 @@ bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName)
     deviceName = QString::fromUtf8(
         reinterpret_cast<const char *>(buf.data()));
 
-    // The 4 bytes after the device name are the video codec id (e.g. "h264").
-    // We don't need to interpret it here: the demuxer already validates/uses
-    // it when it opens the decoder.
+    // The 4 bytes after the device name are the video codec id, packed as
+    // the big-endian bytes of its 4-character name (e.g. "h264" ->
+    // 0x68323634). Decoder::open() only supports AV_CODEC_ID_H264, so
+    // verify the server actually agreed to that codec instead of
+    // discarding this and finding out only when frames fail to decode.
+    static constexpr quint32 kCodecIdH264 =
+        (static_cast<quint32>('h') << 24) | (static_cast<quint32>('2') << 16) |
+        (static_cast<quint32>('6') << 8) | static_cast<quint32>('4');
     const quint32 codecId = bufferRead32be(&buf[DEVICE_NAME_FIELD_LENGTH]);
-    Q_UNUSED(codecId);
+    if (codecId != kCodecIdH264) {
+        qWarning("Server negotiated video codec 0x%08x, expected h264 "
+                 "(0x%08x) -- this client only supports H264 decode",
+                 codecId, kCodecIdH264);
+        return false;
+    }
     return true;
 }
 

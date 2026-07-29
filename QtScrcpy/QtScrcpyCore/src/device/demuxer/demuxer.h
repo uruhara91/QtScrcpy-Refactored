@@ -178,7 +178,7 @@ private:
 
     PacketBufferPool() = default;
     ~PacketBufferPool() {
-        for (auto& freeList : m_buckets) {
+        for (const auto& freeList : m_buckets) {
             for (uint8_t* raw : freeList) av_free(raw);
         }
     }

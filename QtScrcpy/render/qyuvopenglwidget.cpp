@@ -556,9 +556,7 @@ void QYuvOpenGLWidget::paintGL()
     const int selectedIndex = acquireNewestReadyFrame();
     if (selectedIndex >= 0) {
         releaseStaleReadyFrames(selectedIndex);
-    }
 
-    if (selectedIndex >= 0) {
         FrameBuffer &frame = m_frames[selectedIndex];
         const int width = m_frameWidth.load(std::memory_order_relaxed);
         const int height = m_frameHeight.load(std::memory_order_relaxed);

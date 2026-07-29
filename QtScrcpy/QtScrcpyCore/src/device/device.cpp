@@ -340,7 +340,7 @@ void Device::initSignals()
 
             if (m_recorder && !m_recorder->isFailed()) {
                 PacketHandle copy = clonePacketReference(packet.get());
-                if (copy && m_recorder->push(copy.get())) copy.release();
+                if (copy && m_recorder->push(copy.get())) (void)copy.release();
             }
             if (m_decoder) (void)m_decoder->enqueuePacket(std::move(packet));
         }, Qt::DirectConnection);
@@ -350,7 +350,7 @@ void Device::initSignals()
             PacketHandle packet(raw);
             if (packet && m_recorder && !m_recorder->isFailed() &&
                 m_recorder->push(packet.get()))
-                packet.release();
+                (void)packet.release();
         }, Qt::DirectConnection);
     }
 

@@ -50,8 +50,8 @@ private:
     using SharedFrame = std::shared_ptr<AVFrame>;
 
     void applyFpsCounterState(bool enabled);
-    void deliverSnapshot(SharedFrame snapshot,
-                         std::vector<FrameCallback> callbacks);
+    void deliverSnapshot(const SharedFrame &snapshot,
+                         const std::vector<FrameCallback> &callbacks);
 
 private:
     FpsCounter m_fpsCounter;

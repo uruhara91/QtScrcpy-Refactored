@@ -113,7 +113,7 @@ void DeviceManage::onDeviceConnected(bool success, const QString &serial, const 
     }
 }
 
-void DeviceManage::onDeviceDisconnected(QString serial)
+void DeviceManage::onDeviceDisconnected(const QString &serial)
 {
     // Emit first while the Device and its userData are still addressable.
     emit deviceDisconnected(serial);

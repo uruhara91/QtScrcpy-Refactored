@@ -101,8 +101,8 @@ void VideoBuffer::updateLatestFrame(const AVFrame *frame)
     const bool queued = QMetaObject::invokeMethod(
         this,
         [this, snapshot = std::move(snapshot),
-         callbacks = std::move(callbacks)]() mutable {
-            deliverSnapshot(std::move(snapshot), std::move(callbacks));
+         callbacks = std::move(callbacks)]() {
+            deliverSnapshot(snapshot, callbacks);
         },
         Qt::QueuedConnection);
 
@@ -120,8 +120,8 @@ void VideoBuffer::peekRenderedFrame(FrameCallback onFrame)
     m_frameWork.fetch_or(WorkCapture, std::memory_order_release);
 }
 
-void VideoBuffer::deliverSnapshot(SharedFrame snapshot,
-                                  std::vector<FrameCallback> callbacks)
+void VideoBuffer::deliverSnapshot(const SharedFrame &snapshot,
+                                  const std::vector<FrameCallback> &callbacks)
 {
     if (!snapshot || callbacks.empty() ||
         snapshot->width <= 0 || snapshot->height <= 0) {
@@ -160,7 +160,7 @@ void VideoBuffer::deliverSnapshot(SharedFrame snapshot,
     convert.deInit();
     if (!converted) return;
 
-    for (FrameCallback &callback : callbacks) {
+    for (const FrameCallback &callback : callbacks) {
         if (callback) callback(width, height, rgbBuffer.data());
     }
 }

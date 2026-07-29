@@ -23,7 +23,7 @@ public:
 
 protected slots:
     void onDeviceConnected(bool success, const QString& serial, const QString& deviceName, const QSize& size);
-    void onDeviceDisconnected(QString serial);
+    void onDeviceDisconnected(const QString &serial);
 
 private:
     quint16 getFreePort();

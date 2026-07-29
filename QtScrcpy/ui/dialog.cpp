@@ -923,7 +923,7 @@ void Dialog::onDeviceConnected(bool success, const QString &serial, const QStrin
     GroupController::instance().addDevice(serial);
 }
 
-void Dialog::onDeviceDisconnected(QString serial)
+void Dialog::onDeviceDisconnected(const QString &serial)
 {
     GroupController::instance().removeDevice(serial);
     auto device = qsc::IDeviceManage::getInstance().getDevice(serial);

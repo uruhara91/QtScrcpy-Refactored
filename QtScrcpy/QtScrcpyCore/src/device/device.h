@@ -30,7 +30,7 @@ struct AVPacket;
 
 namespace qsc {
 
-class Device : public IDevice
+class Device final : public IDevice
 {
     Q_OBJECT
 public:

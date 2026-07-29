@@ -230,7 +230,7 @@ bool Server::execute()
     }
     args << "audio=false";
     // 服务端默认-1，可不传
-    if (-1 != m_params.scid) {
+    if (static_cast<quint32>(-1) != m_params.scid) {
         args << QString("scid=%1").arg(m_params.scid, 8, 16, QChar('0'));
     }
 
@@ -337,7 +337,7 @@ bool Server::execute()
 
 bool Server::start(Server::ServerParams params)
 {
-    m_params = params;
+    m_params = std::move(params);
     m_serverStartStep = SSS_PUSH;
     return startServerByStep();
 }

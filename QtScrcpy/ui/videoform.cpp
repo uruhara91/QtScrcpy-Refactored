@@ -951,18 +951,18 @@ void VideoForm::wheelEvent(QWheelEvent *event)
     if (m_videoWidget.data()->geometry().contains(event->position().toPoint())) {
         if (!device) return;
         QPointF pos = m_videoWidget.data()->mapFrom(this, event->position().toPoint());
-        QWheelEvent wheelEvent(
+        QWheelEvent simulatedWheelEvent(
             pos, event->globalPosition(), event->pixelDelta(), event->angleDelta(), event->buttons(), event->modifiers(), event->phase(), event->inverted());
 #else
     if (m_videoWidget.data()->geometry().contains(event->pos())) {
         if (!device) return;
         QPointF pos = m_videoWidget.data()->mapFrom(this, event->pos());
 
-        QWheelEvent wheelEvent(
+        QWheelEvent simulatedWheelEvent(
             pos, event->globalPosF(), event->pixelDelta(), event->angleDelta(), event->delta(), event->orientation(),
             event->buttons(), event->modifiers(), event->phase(), event->source(), event->inverted());
 #endif
-        emit device->wheelEvent(&wheelEvent, m_videoWidget.data()->frameSize(), m_videoWidget.data()->size());
+        emit device->wheelEvent(&simulatedWheelEvent, m_videoWidget.data()->frameSize(), m_videoWidget.data()->size());
     }
 }
 

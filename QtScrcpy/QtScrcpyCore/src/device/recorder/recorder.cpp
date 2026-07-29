@@ -221,7 +221,7 @@ const AVOutputFormat *Recorder::findMuxer(const char *name)
 #else
         outFormat = av_oformat_next(outFormat);
 #endif
-    } while (outFormat && strcmp(outFormat->name, name));
+    } while (outFormat && strcmp(outFormat->name, name) != 0);
     return outFormat;
 }
 

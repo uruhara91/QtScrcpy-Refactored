@@ -45,6 +45,21 @@ GroupController &GroupController::instance()
     return gc;
 }
 
+template <typename Func>
+void GroupController::forEachControlledDevice(Func &&func)
+{
+    for (const auto &serial : m_devices) {
+        if (isHost(serial)) {
+            continue;
+        }
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (!device) {
+            continue;
+        }
+        func(serial, device);
+    }
+}
+
 void GroupController::updateDeviceState(const QString &serial)
 {
     if (!m_devices.contains(serial)) {
@@ -111,362 +126,130 @@ void GroupController::onFrame(int width, int height,
 void GroupController::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)
 {
     Q_UNUSED(frameSize);
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
+    forEachControlledDevice([&](const QString &serial, auto &device) {
         device->mouseEvent(from, getFrameSize(serial), showSize);
-    }
+    });
 }
 
 void GroupController::wheelEvent(const QWheelEvent *from, const QSize &frameSize, const QSize &showSize)
 {
     Q_UNUSED(frameSize);
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
+    forEachControlledDevice([&](const QString &serial, auto &device) {
         device->wheelEvent(from, getFrameSize(serial), showSize);
-    }
+    });
 }
 
 void GroupController::keyEvent(const QKeyEvent *from, const QSize &frameSize, const QSize &showSize)
 {
     Q_UNUSED(frameSize);
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
+    forEachControlledDevice([&](const QString &serial, auto &device) {
         device->keyEvent(from, getFrameSize(serial), showSize);
-    }
+    });
 }
 
 void GroupController::postGoBack()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postGoBack();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postGoBack(); });
 }
 
 void GroupController::postGoHome()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postGoHome();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postGoHome(); });
 }
 
 void GroupController::postGoMenu()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postGoMenu();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postGoMenu(); });
 }
 
 void GroupController::postAppSwitch()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postAppSwitch();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postAppSwitch(); });
 }
 
 void GroupController::postPower()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postPower();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postPower(); });
 }
 
 void GroupController::postVolumeUp()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postVolumeUp();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postVolumeUp(); });
 }
 
 void GroupController::postVolumeDown()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postVolumeDown();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postVolumeDown(); });
 }
 
 void GroupController::postCopy()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postCopy();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postCopy(); });
 }
 
 void GroupController::postCut()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postCut();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->postCut(); });
 }
 
 void GroupController::setDisplayPower(bool on)
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->setDisplayPower(on);
-    }
+    forEachControlledDevice([on](const QString &, auto &device) { device->setDisplayPower(on); });
 }
 
 void GroupController::expandNotificationPanel()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->expandNotificationPanel();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->expandNotificationPanel(); });
 }
 
 void GroupController::collapsePanel()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->collapsePanel();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->collapsePanel(); });
 }
 
 void GroupController::postBackOrScreenOn(bool down)
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postBackOrScreenOn(down);
-    }
+    forEachControlledDevice([down](const QString &, auto &device) { device->postBackOrScreenOn(down); });
 }
 
 void GroupController::postTextInput(QString &text)
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->postTextInput(text);
-    }
+    forEachControlledDevice([&text](const QString &, auto &device) { device->postTextInput(text); });
 }
 
 void GroupController::requestDeviceClipboard()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->requestDeviceClipboard();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->requestDeviceClipboard(); });
 }
 
 void GroupController::setDeviceClipboard(bool pause)
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->setDeviceClipboard(pause);
-    }
+    forEachControlledDevice([pause](const QString &, auto &device) { device->setDeviceClipboard(pause); });
 }
 
 void GroupController::clipboardPaste()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->clipboardPaste();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->clipboardPaste(); });
 }
 
 void GroupController::pushFileRequest(const QString &file, const QString &devicePath)
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
+    forEachControlledDevice([&file, &devicePath](const QString &, auto &device) {
         device->pushFileRequest(file, devicePath);
-    }
+    });
 }
 
 void GroupController::installApkRequest(const QString &apkFile)
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->installApkRequest(apkFile);
-    }
+    forEachControlledDevice([&apkFile](const QString &, auto &device) { device->installApkRequest(apkFile); });
 }
 
 void GroupController::screenshot()
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->screenshot();
-    }
+    forEachControlledDevice([](const QString &, auto &device) { device->screenshot(); });
 }
 
 void GroupController::showTouch(bool show)
 {
-    for (const auto& serial : m_devices) {
-        if (true == isHost(serial)) {
-            continue;
-        }
-        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
-        if (!device) {
-            continue;
-        }
-
-        device->showTouch(show);
-    }
+    forEachControlledDevice([show](const QString &, auto &device) { device->showTouch(show); });
 }

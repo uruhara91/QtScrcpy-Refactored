@@ -55,6 +55,16 @@ private:
     bool isHost(const QString& serial);
     QSize getFrameSize(const QString& serial);
 
+    // Runs func(serial, device) for every tracked device that isn't the
+    // host and is still alive (getDevice() didn't return null). This is
+    // the single shared implementation of the "skip host, look up device,
+    // skip if it's gone, act on it" loop that used to be copy-pasted
+    // verbatim into 20 separate override methods below -- including the
+    // isHost()/getDevice() null-check sequencing, so there's exactly one
+    // place that can get that sequencing wrong instead of 20.
+    template <typename Func>
+    void forEachControlledDevice(Func &&func);
+
 private:
     QVector<QString> m_devices;
 };

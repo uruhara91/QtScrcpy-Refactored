@@ -11,6 +11,7 @@
 
 #include "server.h"
 #include "qtscrcpytelemetry.h"
+#include "bufferutil.h"
 
 #define DEVICE_NAME_FIELD_LENGTH 64
 #define SOCKET_NAME_PREFIX "scrcpy"
@@ -19,15 +20,6 @@
 #define CONNECT_RETRY_INTERVAL_MS 100
 #define CONNECT_PROBE_TIMEOUT_MS 300
 #define CONNECT_TOTAL_TIMEOUT_MS 10000
-
-static quint32 bufferRead32be(const quint8 *buf)
-{
-    if (!buf) return 0;
-    return (static_cast<quint32>(buf[0]) << 24) |
-           (static_cast<quint32>(buf[1]) << 16) |
-           (static_cast<quint32>(buf[2]) << 8) |
-           static_cast<quint32>(buf[3]);
-}
 
 static QString shellQuote(QString value)
 {
@@ -509,7 +501,7 @@ bool Server::readInfo(VideoSocket *videoSocket, QString &deviceName)
     static constexpr quint32 kCodecIdH264 =
         (static_cast<quint32>('h') << 24) | (static_cast<quint32>('2') << 16) |
         (static_cast<quint32>('6') << 8) | static_cast<quint32>('4');
-    const quint32 codecId = bufferRead32be(&buf[DEVICE_NAME_FIELD_LENGTH]);
+    const quint32 codecId = BufferUtil::read32(&buf[DEVICE_NAME_FIELD_LENGTH]);
     if (codecId != kCodecIdH264) {
         qWarning("Server negotiated video codec 0x%08x, expected h264 "
                  "(0x%08x) -- this client only supports H264 decode",

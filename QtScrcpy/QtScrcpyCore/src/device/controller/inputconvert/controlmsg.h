@@ -5,6 +5,7 @@
 #include <QRect>
 #include <QString>
 #include <span>
+#include <variant>
 
 #include "input.h"
 #include "keycodes.h"
@@ -50,9 +51,9 @@ public:
     };
 
     explicit ControlMsg(ControlMsgType controlMsgType);
-    ~ControlMsg() override;
+    ~ControlMsg() override = default;
 
-    [[nodiscard]] ControlMsgType type() const noexcept { return m_data.type; }
+    [[nodiscard]] ControlMsgType type() const noexcept { return m_type; }
 
     void setInjectKeycodeMsgData(AndroidKeyeventAction action,
                                  AndroidKeycode keycode,
@@ -80,65 +81,68 @@ public:
     [[nodiscard]] QByteArray serializeData() const;
 
 private:
-    struct ControlMsgData
+    struct InjectKeycodeData
     {
-        ControlMsgType type = CMT_NULL;
-        union
-        {
-            struct
-            {
-                AndroidKeyeventAction action;
-                AndroidKeycode keycode;
-                quint32 repeat;
-                AndroidMetastate metastate;
-            } injectKeycode;
-            struct
-            {
-                char *text = Q_NULLPTR;
-                quint32 length = 0;
-            } injectText;
-            struct
-            {
-                quint64 id;
-                AndroidMotioneventAction action;
-                AndroidMotioneventButtons actionButtons;
-                AndroidMotioneventButtons buttons;
-                QRect position;
-                float pressure;
-            } injectTouch;
-            struct
-            {
-                QRect position;
-                float hScroll;
-                float vScroll;
-                AndroidMotioneventButtons buttons;
-            } injectScroll;
-            struct
-            {
-                AndroidKeyeventAction action;
-            } backOrScreenOn;
-            struct
-            {
-                enum GetClipboardCopyKey copyKey;
-            } getClipboard;
-            struct
-            {
-                uint64_t sequence = 0;
-                char *text = Q_NULLPTR;
-                quint32 length = 0;
-                bool paste = true;
-            } setClipboard;
-            struct
-            {
-                bool on;
-            } setDisplayPower;
-        };
-
-        ControlMsgData() : getClipboard{GCCK_NONE} {}
-        ~ControlMsgData() {}
+        AndroidKeyeventAction action = AKEY_EVENT_ACTION_DOWN;
+        AndroidKeycode keycode = AKEYCODE_UNKNOWN;
+        quint32 repeat = 0;
+        AndroidMetastate metastate = AMETA_NONE;
+    };
+    struct InjectTextData
+    {
+        QByteArray text;
+    };
+    struct InjectTouchData
+    {
+        quint64 id = 0;
+        AndroidMotioneventAction action = AMOTION_EVENT_ACTION_DOWN;
+        AndroidMotioneventButtons actionButtons{};
+        AndroidMotioneventButtons buttons{};
+        QRect position;
+        float pressure = 0.0f;
+    };
+    struct InjectScrollData
+    {
+        QRect position;
+        float hScroll = 0.0f;
+        float vScroll = 0.0f;
+        AndroidMotioneventButtons buttons{};
+    };
+    struct BackOrScreenOnData
+    {
+        AndroidKeyeventAction action = AKEY_EVENT_ACTION_DOWN;
+    };
+    struct GetClipboardData
+    {
+        GetClipboardCopyKey copyKey = GCCK_NONE;
+    };
+    struct SetClipboardData
+    {
+        quint64 sequence = 0;
+        QByteArray text;
+        bool paste = true;
+    };
+    struct SetDisplayPowerData
+    {
+        bool on = false;
     };
 
-    ControlMsgData m_data;
+    // std::monostate covers CMT_NULL (the just-constructed default state)
+    // and the four commands that carry no payload at all (expand/collapse
+    // panel, rotate device) -- there's simply nothing to hold for those.
+    using Payload = std::variant<
+        std::monostate,
+        InjectKeycodeData,
+        InjectTextData,
+        InjectTouchData,
+        InjectScrollData,
+        BackOrScreenOnData,
+        GetClipboardData,
+        SetClipboardData,
+        SetDisplayPowerData>;
+
+    ControlMsgType m_type = CMT_NULL;
+    Payload m_data;
 };
 
 #endif // CONTROLMSG_H

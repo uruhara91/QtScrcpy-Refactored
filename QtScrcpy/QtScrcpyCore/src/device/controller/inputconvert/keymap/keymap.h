@@ -55,7 +55,7 @@ public:
         int delayClickNodesCount = 0;
         AndroidKeycode androidKey = AKEYCODE_UNKNOWN;          // for key press
 
-        KeyNode(
+        explicit KeyNode(
             ActionType type = AT_INVALID,
             int key = Qt::Key_unknown,
             QPointF pos = QPointF(0, 0),
@@ -114,7 +114,7 @@ public:
         ~KeyMapNode() {}
     };
 
-    KeyMap(QObject *parent = Q_NULLPTR);
+    explicit KeyMap(QObject *parent = Q_NULLPTR);
     virtual ~KeyMap();
 
     void loadKeyMap(const QString &json);
@@ -161,7 +161,7 @@ private:
     static QString s_keyMapPath;
 
     QVector<KeyMapNode> m_keyMapNodes;
-    KeyNode m_switchKey = { AT_KEY, Qt::Key_QuoteLeft };
+    KeyNode m_switchKey{ AT_KEY, Qt::Key_QuoteLeft };
 
     // just for return
     KeyMapNode m_invalidNode;

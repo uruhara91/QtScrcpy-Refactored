@@ -2,7 +2,6 @@
 #include <QDebug>
 #include <QFileInfo>
 
-#include "compat.h"
 #include "demuxer.h"
 #include "qtscrcpytelemetry.h"
 #include "recorder.h"
@@ -130,19 +129,11 @@ bool Recorder::open()
         return false;
     }
 
-#ifdef QTSCRCPY_LAVF_HAS_NEW_CODEC_PARAMS_API
     outStream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
     outStream->codecpar->codec_id = inputCodec->id;
     outStream->codecpar->format = AV_PIX_FMT_YUV420P;
     outStream->codecpar->width = m_declaredFrameSize.width();
     outStream->codecpar->height = m_declaredFrameSize.height();
-#else
-    outStream->codec->codec_type = AVMEDIA_TYPE_VIDEO;
-    outStream->codec->codec_id = inputCodec->id;
-    outStream->codec->pix_fmt = AV_PIX_FMT_YUV420P;
-    outStream->codec->width = m_declaredFrameSize.width();
-    outStream->codec->height = m_declaredFrameSize.height();
-#endif
 
     const int ret = avio_open(&m_formatCtx->pb,
                               m_fileName.toUtf8().constData(),
@@ -211,16 +202,10 @@ bool Recorder::write(AVPacket *packet)
 
 const AVOutputFormat *Recorder::findMuxer(const char *name)
 {
-#ifdef QTSCRCPY_LAVF_HAS_NEW_MUXER_ITERATOR_API
     void *opaque = nullptr;
-#endif
     const AVOutputFormat *outFormat = nullptr;
     do {
-#ifdef QTSCRCPY_LAVF_HAS_NEW_MUXER_ITERATOR_API
         outFormat = av_muxer_iterate(&opaque);
-#else
-        outFormat = av_oformat_next(outFormat);
-#endif
     } while (outFormat && strcmp(outFormat->name, name) != 0);
     return outFormat;
 }
@@ -236,13 +221,8 @@ bool Recorder::recorderWriteHeader(const AVPacket *packet)
     }
     memcpy(extradata, packet->data, static_cast<std::size_t>(packet->size));
 
-#ifdef QTSCRCPY_LAVF_HAS_NEW_CODEC_PARAMS_API
     ostream->codecpar->extradata = extradata;
     ostream->codecpar->extradata_size = packet->size;
-#else
-    ostream->codec->extradata = extradata;
-    ostream->codec->extradata_size = packet->size;
-#endif
 
     if (avformat_write_header(m_formatCtx, nullptr) < 0) {
         qCritical("Failed to write header recorder file");

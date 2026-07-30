@@ -7,7 +7,7 @@ class InputConvertNormal : public InputConvertBase
 {
     Q_OBJECT
 public:
-    InputConvertNormal(Controller *controller);
+    explicit InputConvertNormal(Controller *controller);
     ~InputConvertNormal() override;
 
     void mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize) override;

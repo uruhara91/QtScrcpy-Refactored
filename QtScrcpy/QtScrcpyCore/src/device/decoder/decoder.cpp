@@ -1,6 +1,5 @@
 #include "decoder.h"
 #include "videobuffer.h"
-#include "compat.h"
 #include "qtscrcpytelemetry.h"
 
 #include <QDebug>

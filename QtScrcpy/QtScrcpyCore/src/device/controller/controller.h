@@ -27,7 +27,7 @@ class Controller : public QObject
 {
     Q_OBJECT
 public:
-    Controller(std::function<qint64(const QByteArray&)> sendData,
+    explicit Controller(std::function<qint64(const QByteArray&)> sendData,
                QString gameScript = "",
                QObject *parent = Q_NULLPTR);
     ~Controller() override;

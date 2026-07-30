@@ -12,7 +12,7 @@ class CocoaMouseTap
     , public QThread
 {
 public:
-    CocoaMouseTap(QObject *parent = Q_NULLPTR);
+    explicit CocoaMouseTap(QObject *parent = Q_NULLPTR);
     virtual ~CocoaMouseTap();
 
     void initMouseEventTap() override;

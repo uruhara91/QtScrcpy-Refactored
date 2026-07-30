@@ -15,7 +15,7 @@ public:
         FAR_ERROR_EXEC,   // 执行失败
     };
 
-    FileHandler(QObject *parent = nullptr);
+    explicit FileHandler(QObject *parent = nullptr);
     virtual ~FileHandler();
 
     const QString &getDevicePath();

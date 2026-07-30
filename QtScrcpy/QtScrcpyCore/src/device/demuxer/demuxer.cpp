@@ -1,6 +1,5 @@
 #include "demuxer.h"
 #include "videosocket.h"
-#include "compat.h"
 #include "qtscrcpytelemetry.h"
 
 #include <QDebug>

@@ -547,6 +547,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
+# Enables AddressSanitizer + UndefinedBehaviorSanitizer for a given target,
+# Debug builds only (RelWithDebInfo/Release performance builds are
+# unaffected) and only for GCC/Clang (MSVC's sanitizer support uses a
+# different flag set). Used by the protocol test suite so 'ctest' actually
+# catches memory-safety/UB bugs at test time instead of relying purely on
+# manual review to catch them.
+function(qtscrcpy_enable_sanitizer target)
+    if (NOT MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    endif()
+endfunction()
+
 add_subdirectory(QtScrcpyCore)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -554,3 +567,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     QtScrcpyCore
 )
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/QtScrcpyDiagnostics.cmake")
+
+enable_testing()
+add_subdirectory(tests)

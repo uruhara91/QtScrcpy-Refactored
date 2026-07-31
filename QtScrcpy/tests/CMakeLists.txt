@@ -19,6 +19,7 @@ target_include_directories(QtScrcpyProtocolTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../QtScrcpyCore/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../QtScrcpyCore/src/common
     ${CMAKE_CURRENT_SOURCE_DIR}/../QtScrcpyCore/src/device/android
+    ${CMAKE_CURRENT_SOURCE_DIR}/../QtScrcpyCore/src/device/controller
     ${CMAKE_CURRENT_SOURCE_DIR}/../QtScrcpyCore/src/device/controller/inputconvert
     ${CMAKE_CURRENT_SOURCE_DIR}/../QtScrcpyCore/src/device/controller/receiver
 )

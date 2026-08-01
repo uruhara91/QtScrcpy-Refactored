@@ -569,4 +569,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/QtScrcpyDiagnostics.cmake")
 
 enable_testing()
-add_subdirectory(tests)
+option(QTSCRCPY_BUILD_TESTS "Build the protocol test suite (QtScrcpyProtocolTests)" ON)
+if (QTSCRCPY_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

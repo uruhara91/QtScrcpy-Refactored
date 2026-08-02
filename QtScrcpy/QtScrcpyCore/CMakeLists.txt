@@ -225,17 +225,69 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     #     .../third_party/ffmpeg/lib/libavformat.a" on every distro build
     #     that doesn't pre-stage a static FFmpeg (i.e. every distro build).
     if(EXISTS "${FFMPEG_STATIC_LIB_DIR}/libavformat.a")
-        message(STATUS "[${QSC_PROJECT_NAME}] Using bundled static FFmpeg at ${FFMPEG_STATIC_LIB_DIR}")
         target_include_directories(${QSC_PROJECT_NAME} PUBLIC ${FFMPEG_STATIC_INCLUDE_DIR})
-        target_link_libraries(${QSC_PROJECT_NAME} PUBLIC
-            ${FFMPEG_STATIC_LIB_DIR}/libavformat.a
-            ${FFMPEG_STATIC_LIB_DIR}/libavcodec.a
-            ${FFMPEG_STATIC_LIB_DIR}/libavutil.a
-            ${FFMPEG_STATIC_LIB_DIR}/libswscale.a
-            ${FFMPEG_STATIC_LIB_DIR}/libswresample.a
-            pthread
-            z
-        )
+
+        if(EXISTS "${FFMPEG_STATIC_LIB_DIR}/pkgconfig/libavformat.pc")
+            # Prefer the bundled FFmpeg's own pkg-config metadata (produced
+            # automatically by a normal `make install` of a FFmpeg built
+            # with --enable-static) over the hardcoded 5-library list
+            # below. This matters as soon as that FFmpeg build was
+            # configured with any optional external dependency - most
+            # relevantly hardware decode via --enable-vaapi/--enable-cuda
+            # (see Decoder::tryInitHwAccel()) - since those pull in extra
+            # system libraries (e.g. libva) that the hardcoded list has no
+            # way to know about and would otherwise fail to link
+            # ("undefined reference to `vaInitialize'" etc.). The
+            # <prefix>_STATIC_LDFLAGS variable pkg-config gives us already
+            # resolves the full private/transitive dependency chain
+            # (every module's Libs.private) for a static link - unlike the
+            # plain PkgConfig::<target> import used in the system-FFmpeg
+            # branch below, where Libs.private is correctly irrelevant
+            # since dynamic linking resolves those transitively at
+            # runtime via each .so's own NEEDED entries instead.
+            find_package(PkgConfig REQUIRED)
+            set(_qsc_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
+            set(ENV{PKG_CONFIG_PATH} "${FFMPEG_STATIC_LIB_DIR}/pkgconfig")
+            pkg_check_modules(FFMPEG_BUNDLED REQUIRED
+                libavformat
+                libavcodec
+                libavutil
+                libswscale
+                libswresample
+            )
+            set(ENV{PKG_CONFIG_PATH} "${_qsc_saved_pkg_config_path}")
+
+            message(STATUS "[${QSC_PROJECT_NAME}] Using bundled static FFmpeg at ${FFMPEG_STATIC_LIB_DIR} (linked via its own pkg-config metadata)")
+            # -Wl,--start-group/--end-group: static archives generally need
+            # to be ordered dependents-before-dependencies for a single-pass
+            # linker, and libavformat/libavcodec/libavutil can have minor
+            # circular references between them - wrapping the whole
+            # pkg-config-resolved set in an archive group sidesteps having
+            # to hand-verify the exact order pkg-config happened to emit.
+            # Supported by GNU ld, gold, lld, and mold alike.
+            target_link_libraries(${QSC_PROJECT_NAME} PUBLIC
+                -Wl,--start-group
+                ${FFMPEG_BUNDLED_STATIC_LDFLAGS}
+                -Wl,--end-group
+            )
+        else()
+            # No .pc files bundled alongside the .a files - fall back to
+            # the plain hardcoded list this always used before. Fine for a
+            # minimal/default FFmpeg build; a build configured with any
+            # optional external dependency (hwaccel, etc.) needs its .pc
+            # files bundled too (via `make install`) to link correctly -
+            # see the branch above.
+            message(STATUS "[${QSC_PROJECT_NAME}] Using bundled static FFmpeg at ${FFMPEG_STATIC_LIB_DIR}")
+            target_link_libraries(${QSC_PROJECT_NAME} PUBLIC
+                ${FFMPEG_STATIC_LIB_DIR}/libavformat.a
+                ${FFMPEG_STATIC_LIB_DIR}/libavcodec.a
+                ${FFMPEG_STATIC_LIB_DIR}/libavutil.a
+                ${FFMPEG_STATIC_LIB_DIR}/libswscale.a
+                ${FFMPEG_STATIC_LIB_DIR}/libswresample.a
+                pthread
+                z
+            )
+        endif()
     else()
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET

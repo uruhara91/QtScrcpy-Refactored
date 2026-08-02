@@ -163,7 +163,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libavutil.a
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswscale.a
         ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/ffmpeg/lib/libswresample.a
-        secur32 bcrypt mfplat mfuuid ole32 strmiids
+        # d3d11/dxgi: needed only if the bundled static FFmpeg was built
+        # with --enable-d3d11va (decoder.cpp now opportunistically tries
+        # D3D11VA hardware decode, falling back to software automatically
+        # if unavailable at runtime - see Decoder::tryInitHwAccel()). Both
+        # are standard Windows SDK import libraries always present with
+        # any Windows toolchain, so linking them unconditionally costs
+        # nothing when they end up unused.
+        secur32 bcrypt mfplat mfuuid ole32 strmiids d3d11 dxgi
     )
 endif()
 

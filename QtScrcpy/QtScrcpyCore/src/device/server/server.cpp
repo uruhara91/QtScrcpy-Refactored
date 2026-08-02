@@ -224,8 +224,23 @@ bool Server::execute()
     // AV_CODEC_ID_H264 -- it cannot decode H265/AV1. Request h264
     // explicitly rather than relying on scrcpy-server's own default
     // (which is not part of any documented compatibility contract and
-    // could change between server versions). This also keeps decode
-    // CPU cost down since we're not using hardware acceleration.
+    // could change between server versions).
+    //
+    // H.265/AV1 would compress noticeably better than H.264 at the same
+    // quality - meaningfully less Wi-Fi bandwidth for the same resolution/
+    // framerate - and would be worth adding as a future enhancement. It's
+    // a bigger change than swapping this string, though: it needs (a) the
+    // client to negotiate/accept a non-H264 codec from scrcpy-server, (b)
+    // Decoder::open() to select the right AVCodecID instead of assuming
+    // H.264, and (c) - importantly - real hardware decode for it, since
+    // H.265/AV1 software decode is considerably more CPU-expensive than
+    // H.264. That hardware-decode path now exists (see
+    // Decoder::tryInitHwAccel()) and already asks libavcodec for whatever
+    // hw configs a given AVCodec advertises, so it would extend to H.265/
+    // AV1 without changes there once (a) and (b) above are done - but
+    // Android encoder support for both is still inconsistent across
+    // device/OS versions, so this needs capability negotiation with the
+    // server, not just a hardcoded switch.
     args << "video_codec=h264";
     args << "audio=false";
     // 服务端默认-1，可不传

@@ -2,8 +2,8 @@
 #define CONFIG_H
 
 #include <QObject>
-#include <QPointer>
 #include <QRect>
+#include <memory>
 
 struct UserBootConfig
 {
@@ -75,12 +75,26 @@ public:
 
 private:
     explicit Config(QObject *parent = nullptr);
+    // Declared (not defaulted) so it can be defined in config.cpp, where
+    // QSettings is a complete type. Needed because m_settings/m_userData
+    // are std::unique_ptr<QSettings>: an implicitly-generated destructor
+    // would need sizeof(QSettings) wherever it's instantiated, and thanks
+    // to the Q_OBJECT meta-type machinery that happens in every
+    // translation unit that includes this header (via moc-generated
+    // code) - not just this one, which is the only one that included the
+    // full <QSettings> header. QPointer (used here previously) didn't
+    // have this requirement since it doesn't own/delete anything itself.
+    ~Config() override;
     const QString &getConfigPath();
 
 private:
     static QString s_configPath;
-    QPointer<QSettings> m_settings;
-    QPointer<QSettings> m_userData;
+    // Constructed with `new QSettings(...)` and no Qt parent (see the
+    // Config constructor) - a QPointer merely tracks an object, it does
+    // not own/delete it, so these were never actually freed. unique_ptr
+    // gives them a real owner: Config's implicitly-generated destructor.
+    std::unique_ptr<QSettings> m_settings;
+    std::unique_ptr<QSettings> m_userData;
 };
 
 #endif // CONFIG_H

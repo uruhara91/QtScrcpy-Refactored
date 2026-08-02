@@ -3,6 +3,7 @@
 #include <QFileDialog>
 #include <QKeyEvent>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QTimer>
 
 #include "config.h"
@@ -1043,17 +1044,14 @@ void Dialog::on_usbConnectBtn_clicked()
 int Dialog::findDeviceFromeSerialBox(bool wifi)
 {
     QString regStr = "\\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\:([0-9]|[1-9]\\d|[1-9]\\d{2}|[1-9]\\d{3}|[1-5]\\d{4}|6[0-4]\\d{3}|65[0-4]\\d{2}|655[0-2]\\d|6553[0-5])\\b";
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    QRegExp regIP(regStr);
-#else
-    QRegularExpression regIP(regStr);
-#endif
+    // anchoredPattern() wraps the pattern in \A(?:...)\z so match() only
+    // succeeds on a match of the *whole* string - the QRegularExpression
+    // equivalent of QRegExp::exactMatch(), which this replaces. Without
+    // it, match().hasMatch() only requires the pattern to match *some*
+    // substring, which is not the same check.
+    const QRegularExpression regIP(QRegularExpression::anchoredPattern(regStr));
     for (int i = 0; i < ui->serialBox->count(); ++i) {
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-        bool isWifi = regIP.exactMatch(ui->serialBox->itemText(i));
-#else
-        bool isWifi = regIP.match(ui->serialBox->itemText(i)).hasMatch();
-#endif
+        const bool isWifi = regIP.match(ui->serialBox->itemText(i)).hasMatch();
         bool found = wifi ? isWifi : !isWifi;
         if (found) {
             return i;

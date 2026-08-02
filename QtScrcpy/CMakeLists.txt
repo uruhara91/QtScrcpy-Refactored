@@ -119,9 +119,43 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(QSC_LTO_FLAG "-flto=auto")
     endif()
 
+    # -march=native pins the binary's instruction-set baseline to whatever
+    # CPU actually built it - great for a local build you'll only ever run
+    # on that same machine, but wrong as a *default* here: this project's
+    # own CI (ci/linux/package_appimage.sh) packages the Release/
+    # RelWithDebInfo build produced by this exact file into an AppImage for
+    # redistribution. An AppImage built with -march=native on the CI
+    # runner's CPU can SIGILL on any end user's machine whose CPU lacks
+    # whatever instruction subset that particular runner happened to
+    # support (AVX2/AVX-512/etc.) - silently, since it's an "illegal
+    # instruction" at runtime, not a build-time error anyone would catch.
+    # Default to a portable baseline instead (x86-64-v2: SSE4.2/POPCNT,
+    # a safe superset assumption for anything from roughly the last
+    # 15 years) and make -march=native available as an explicit opt-in for
+    # people who, like -march=native's name suggests, are building
+    # exclusively for the machine they're building on:
+    #   cmake -DQSC_NATIVE_ARCH=ON ..
+    option(QSC_NATIVE_ARCH
+        "Build with -march=native (fastest, but the resulting binary may \
+SIGILL on any CPU other than the one that built it - do not use this for \
+binaries you intend to redistribute, e.g. the AppImage packaging script)"
+        OFF)
+    if (QSC_NATIVE_ARCH)
+        message(STATUS "[${PROJECT_NAME}] QSC_NATIVE_ARCH=ON: building with "
+                        "-march=native (NOT safe to redistribute this binary)")
+        set(QSC_ARCH_FLAG "-march=native")
+    elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+        set(QSC_ARCH_FLAG "-march=x86-64-v2")
+    else()
+        # x86-64-v2 is an x86_64-specific microarchitecture level; on any
+        # other target (e.g. ARM) just take the compiler's own default
+        # rather than pass it a flag it will reject outright.
+        set(QSC_ARCH_FLAG "")
+    endif()
+
     # Compiler Flags
     add_compile_options(
-        -march=native -O3 -pipe -fno-plt
+        ${QSC_ARCH_FLAG} -O3 -pipe -fno-plt
         -ffunction-sections -fdata-sections
         ${QSC_LTO_FLAG}
         -fomit-frame-pointer -fno-unwind-tables
@@ -547,18 +581,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
-# Enables AddressSanitizer + UndefinedBehaviorSanitizer for a given target,
-# Debug builds only (RelWithDebInfo/Release performance builds are
-# unaffected) and only for GCC/Clang (MSVC's sanitizer support uses a
-# different flag set). Used by the protocol test suite so 'ctest' actually
-# catches memory-safety/UB bugs at test time instead of relying purely on
-# manual review to catch them.
-function(qtscrcpy_enable_sanitizer target)
-    if (NOT MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-        target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
-    endif()
-endfunction()
+# Sanitizer support (qtscrcpy_enable_sanitizer) and the QTSCRCPY_BUILD_TESTS
+# option / test-suite wiring both live in cmake/QtScrcpyDiagnostics.cmake,
+# included right below - previously this file *also* defined its own
+# (permanently shadowed, since the include below always ran afterward and
+# redefined the function) qtscrcpy_enable_sanitizer(), and its own
+# QTSCRCPY_BUILD_TESTS option + add_subdirectory(tests). Both copies
+# reading/writing the same cache variable meant that turning
+# QTSCRCPY_BUILD_TESTS ON actually ran add_subdirectory(tests) twice,
+# which CMake rejects outright ("add_executable cannot create target
+# ... because another target with the same name already exists") - so the
+# test suite could never actually be built via that flag. Single source of
+# truth now: cmake/QtScrcpyDiagnostics.cmake.
 
 add_subdirectory(QtScrcpyCore)
 
@@ -567,9 +601,3 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     QtScrcpyCore
 )
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/QtScrcpyDiagnostics.cmake")
-
-enable_testing()
-option(QTSCRCPY_BUILD_TESTS "Build the protocol test suite (QtScrcpyProtocolTests)" ON)
-if (QTSCRCPY_BUILD_TESTS)
-    add_subdirectory(tests)
-endif()

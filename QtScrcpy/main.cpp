@@ -96,16 +96,31 @@ int main(int argc, char *argv[])
     QSurfaceFormat varFormat = QSurfaceFormat::defaultFormat();
     varFormat.setDepthBufferSize(0);
     varFormat.setStencilBufferSize(0);
+#ifdef Q_OS_OSX
+    // Apple deprecated OpenGL at 10.14 and has never shipped a context
+    // above 4.1 Core (no ARB_direct_state_access / ARB_buffer_storage) -
+    // requesting 4.5 here would just be silently downgraded by the
+    // platform anyway, but asking for what's actually available is more
+    // defensive than relying on that. QYuvOpenGLWidget::initializeGL()
+    // still detects the real context version at runtime and picks its
+    // renderer path accordingly regardless of what's requested here.
+    varFormat.setVersion(4, 1);
+#else
     varFormat.setVersion(4, 5);
+#endif
     varFormat.setProfile(QSurfaceFormat::CoreProfile);
     varFormat.setSwapInterval(0);
     QSurfaceFormat::setDefaultFormat(varFormat);
 
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
-    #if (QT_VERSION >= QT_VERSION_CHECK(5,14,0))
+#endif
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 14, 0))
+    // Not deprecated in Qt6 (unlike Qt::AA_EnableHighDpiScaling above,
+    // which Qt6 always enables implicitly and only needs guarding for
+    // Qt5) - PassThrough still meaningfully improves non-integer scale
+    // factors (125%/150%) there, so this should not be Qt5-only.
     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
-    #endif
 #endif
 
     g_oldMessageHandler = qInstallMessageHandler(myMessageOutput);

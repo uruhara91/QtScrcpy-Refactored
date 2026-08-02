@@ -3,12 +3,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QProcess>
-#include <QSet>
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-#include <QRegExp>
-#else
 #include <QRegularExpression>
-#endif
+#include <QSet>
 
 #include "adbprocessimpl.h"
 #include "qtscrcpytelemetry.h"
@@ -188,13 +184,8 @@ void AdbProcessImpl::setShowTouchesEnabled(const QString &serial, bool enabled)
 QStringList AdbProcessImpl::getDevicesSerialFromStdOut()
 {
     QStringList serials;
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    QRegExp lineExp("\r\n|\n");
-    QRegExp tExp("\t");
-#else
-    QRegularExpression lineExp("\r\n|\n");
-    QRegularExpression tExp("\t");
-#endif
+    const QRegularExpression lineExp("\r\n|\n");
+    const QRegularExpression tExp("\t");
 
     QSet<QString> seen;
     const QStringList devicesInfoList = m_standardOutput.split(lineExp);
@@ -217,21 +208,12 @@ QString AdbProcessImpl::getDeviceIPFromStdOut()
 {
     QString ip;
     const QString strIPExp = "inet addr:[\\d.]*";
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    QRegExp ipRegExp(strIPExp, Qt::CaseInsensitive);
-    if (ipRegExp.indexIn(m_standardOutput) != -1) {
-        ip = ipRegExp.cap(0);
-        ip = ip.right(ip.size() - 10);
-    }
-#else
-    QRegularExpression ipRegExp(strIPExp,
-                               QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression ipRegExp(strIPExp, QRegularExpression::CaseInsensitiveOption);
     const QRegularExpressionMatch match = ipRegExp.match(m_standardOutput);
     if (match.hasMatch()) {
         ip = match.captured(0);
         ip = ip.right(ip.size() - 10);
     }
-#endif
     return ip;
 }
 
@@ -239,21 +221,12 @@ QString AdbProcessImpl::getDeviceIPByIpFromStdOut()
 {
     QString ip;
     const QString strIPExp = "wlan0    inet [\\d.]*";
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    QRegExp ipRegExp(strIPExp, Qt::CaseInsensitive);
-    if (ipRegExp.indexIn(m_standardOutput) != -1) {
-        ip = ipRegExp.cap(0);
-        ip = ip.right(ip.size() - 14);
-    }
-#else
-    QRegularExpression ipRegExp(strIPExp,
-                               QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression ipRegExp(strIPExp, QRegularExpression::CaseInsensitiveOption);
     const QRegularExpressionMatch match = ipRegExp.match(m_standardOutput);
     if (match.hasMatch()) {
         ip = match.captured(0);
         ip = ip.right(ip.size() - 14);
     }
-#endif
     qDebug() << "get ip: " << ip;
     return ip;
 }

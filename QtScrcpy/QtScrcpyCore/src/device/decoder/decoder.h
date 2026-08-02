@@ -25,9 +25,26 @@ extern "C" {
 
 struct AVCodecContext;
 struct AVFrame;
+struct AVBufferRef;
+struct SwsContext;
 
 struct AVCodecContextDeleter {
     void operator()(AVCodecContext *ctx) const;
+};
+
+// Owns one extra reference on an AVHWDeviceContext buffer (the handle
+// returned by av_hwdevice_ctx_create()). RAII wrapper so hardware-decode
+// failure/teardown paths can't leak the device context.
+struct AVBufferRefDeleter {
+    void operator()(AVBufferRef *ref) const;
+};
+
+// libswscale context used only to reshuffle a hardware-transferred frame
+// (typically NV12) into the planar YUV420P layout the rest of the pipeline
+// (VideoBuffer, QYuvOpenGLWidget) already expects. Not used at all on the
+// software-decode path.
+struct SwsContextDeleter {
+    void operator()(SwsContext *ctx) const;
 };
 
 class VideoBuffer;
@@ -58,6 +75,12 @@ public:
     }
     std::size_t maximumQueueDepth() const {
         return m_maximumQueueDepth.load(std::memory_order_relaxed);
+    }
+    // True once a hardware decoder (VideoToolbox/D3D11VA/DXVA2/VAAPI/NVDEC,
+    // depending on platform) has been successfully opened for the current
+    // session. Always false on the software-decode fallback path.
+    bool hwAccelActive() const {
+        return m_hwAccelActive.load(std::memory_order_relaxed);
     }
 
 signals:
@@ -140,11 +163,36 @@ private:
     void logQueueHealth() const;
     int selectDecoderThreadCount() const;
 
+    // --- Hardware-accelerated decode (see decoder.cpp for the full design
+    // note). Tries, in order, the hwaccel APIs that make sense for the
+    // current platform (e.g. D3D11VA -> DXVA2 -> NVDEC on Windows) and
+    // leaves the decoder in plain software mode if none of them succeed -
+    // this is a pure performance/CPU-usage optimization, never a hard
+    // requirement to actually decode anything.
+    bool tryInitHwAccel(const AVCodec *codec);
+    void resetHwAccelState();
+    // Reads back the just-decoded hardware surface into system memory and
+    // reshuffles it into YUV420P in m_hwSwFrame. Returns false if the
+    // surface could not be read back (the caller drops that frame).
+    bool transferHwFrame();
+    static AVPixelFormat getHwFormat(AVCodecContext *ctx, const AVPixelFormat *pixFmts);
+
 private:
     std::unique_ptr<VideoBuffer> m_vb;
     std::unique_ptr<AVCodecContext, AVCodecContextDeleter> m_codecCtx;
     AVFrame *m_recvFrame = nullptr;
     FrameCallback m_onFrame;
+
+    // Hardware-decode state. All unused/empty when hw accel is unavailable
+    // or disabled (QTSCRCPY_DISABLE_HWACCEL=1) - the decoder then behaves
+    // exactly as it did before this feature existed.
+    std::unique_ptr<AVBufferRef, AVBufferRefDeleter> m_hwDeviceCtx;
+    AVPixelFormat m_hwPixFmt = AV_PIX_FMT_NONE;
+    AVHWDeviceType m_hwDeviceType = AV_HWDEVICE_TYPE_NONE;
+    std::atomic_bool m_hwAccelActive{false};
+    AVFrame *m_hwTransferFrame = nullptr; // system-memory copy of the hw surface (native format, usually NV12)
+    AVFrame *m_hwSwFrame = nullptr;       // m_hwTransferFrame reshuffled to YUV420P
+    std::unique_ptr<SwsContext, SwsContextDeleter> m_hwSwsCtx;
 
     QMutex m_queueMutex;
     QWaitCondition m_queueCondition;

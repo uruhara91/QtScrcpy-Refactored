@@ -149,13 +149,18 @@ QVariant readMigratedValue(QSettings *settings,
 
 Config::Config(QObject *parent) : QObject(parent)
 {
-    m_settings = new QSettings(getConfigPath() + "/config.ini", QSettings::IniFormat);
-    m_userData = new QSettings(getConfigPath() + "/userdata.ini", QSettings::IniFormat);
+    m_settings = std::make_unique<QSettings>(getConfigPath() + "/config.ini", QSettings::IniFormat);
+    m_userData = std::make_unique<QSettings>(getConfigPath() + "/userdata.ini", QSettings::IniFormat);
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
     m_settings->setIniCodec("UTF-8");
     m_userData->setIniCodec("UTF-8");
 #endif
 }
+
+// Out-of-line so ~unique_ptr<QSettings>() runs where QSettings (included
+// above) is complete - see the declaration in config.h for why that
+// matters here specifically.
+Config::~Config() = default;
 
 Config &Config::getInstance()
 {
@@ -217,13 +222,13 @@ UserBootConfig Config::getUserBootConfig()
     config.maxSizeIndex = m_userData->value(COMMON_MAX_SIZE_INDEX_KEY, COMMON_MAX_SIZE_INDEX_DEF).toInt();
     config.recordFormatIndex = m_userData->value(COMMON_RECORD_FORMAT_INDEX_KEY, COMMON_RECORD_FORMAT_INDEX_DEF).toInt();
     config.lockOrientationIndex = readMigratedValue(
-        m_userData, COMMON_LOCK_ORIENTATION_INDEX_KEY,
+        m_userData.get(), COMMON_LOCK_ORIENTATION_INDEX_KEY,
         COMMON_LOCK_ORIENTATION_INDEX_LEGACY_KEY,
         COMMON_LOCK_ORIENTATION_INDEX_DEF).toInt();
     config.framelessWindow = m_userData->value(COMMON_FRAMELESS_WINDOW_KEY, COMMON_FRAMELESS_WINDOW_DEF).toBool();
     config.recordScreen = m_userData->value(COMMON_RECORD_SCREEN_KEY, COMMON_RECORD_SCREEN_DEF).toBool();
     config.recordBackground = readMigratedValue(
-        m_userData, COMMON_RECORD_BACKGROUND_KEY,
+        m_userData.get(), COMMON_RECORD_BACKGROUND_KEY,
         COMMON_RECORD_BACKGROUND_LEGACY_KEY,
         COMMON_RECORD_BACKGROUND_DEF).toBool();
     config.reverseConnect = m_userData->value(COMMON_REVERSE_CONNECT_KEY, COMMON_REVERSE_CONNECT_DEF).toBool();
@@ -235,7 +240,7 @@ UserBootConfig Config::getUserBootConfig()
     config.simpleMode = m_userData->value(COMMON_SIMPLE_MODE_KEY, COMMON_SIMPLE_MODE_DEF).toBool();
     config.autoUpdateDevice = m_userData->value(COMMON_AUTO_UPDATE_DEVICE_KEY, COMMON_AUTO_UPDATE_DEVICE_DEF).toBool();
     config.showToolbar = readMigratedValue(
-        m_userData, COMMON_SHOW_TOOLBAR_KEY,
+        m_userData.get(), COMMON_SHOW_TOOLBAR_KEY,
         COMMON_SHOW_TOOLBAR_LEGACY_KEY,
         COMMON_SHOW_TOOLBAR_DEF).toBool();
     m_userData->endGroup();

@@ -185,7 +185,7 @@ Note: it is not necessary to keep your Android device connected via USB after yo
 
 - Start config: function parameter settings before starting the service    
 
-    You can set the bit rate, resolution, recording format, and video save path of the locally recorded video.
+    You can set the bit rate, resolution, decoder (hardware/software), recording format, and video save path of the locally recorded video.
 
     - Background record: the Android device screen is not displayed after starting the service. It is recorded in the background.
     - Always on top: the video window for Android devices will be kept on the top
@@ -300,6 +300,65 @@ Note: compiled artifacts are located at `output/x64/Release`
 2. Open server project in project root with Android Studio
 3. The first time you open it, if you do not have the corresponding version of Gradle, you will be prompted to find Gradle, whether to upgrade Gradle or create it. Select Cancel. After cancelling, you will be prompted to select the location of existing Gradle. Cancel it too and it will download automatically.
 4. After compiling the apk, rename it to scrcpy-server and replace QtScrcpy/QtScrcpyCore/src/third_party/scrcpy-server.
+
+## Environment Variables
+Most day-to-day settings (bitrate, max size, decoder, root, recording, ...)
+live in the Start Config UI and are saved to your config file. The
+variables below are lower-level knobs - mainly for packagers, debugging,
+and tuning on hardware/networks the UI has no control for - and are read
+once at the relevant point (usually app or connection startup), so set
+them before launching `QtScrcpy`.
+
+Where noted, a variable is an override: the app computes/uses a sensible
+value on its own, and only defers to the variable if you've explicitly
+exported it.
+
+#### Paths
+Auto-detected relative to the app's install location on every platform;
+export any of these beforehand to point somewhere else instead (e.g. a
+system-installed `adb`, or a config directory outside the app bundle).
+
+| Variable | Default (if unset) | Effect |
+|---|---|---|
+| `QTSCRCPY_ADB_PATH` | Windows/macOS: bundled `adb` next to the app. Linux: first `adb` found on `PATH`, else `/usr/bin/adb`. | Path to the `adb` binary used for every device operation (list/connect/push/shell). |
+| `QTSCRCPY_SERVER_PATH` | Bundled `scrcpy-server` next to the app. | Path to the `scrcpy-server` jar pushed to the Android device. |
+| `QTSCRCPY_KEYMAP_PATH` | Bundled `keymap/` folder next to the app. | Directory scanned for keymap `.json` files. |
+| `QTSCRCPY_CONFIG_PATH` | Bundled `config/` folder next to the app. | Directory for `config.ini` / `userdata.ini`. |
+
+#### Decoder / rendering
+| Variable | Type / range | Default | Effect |
+|---|---|---|---|
+| `QTSCRCPY_DISABLE_HWACCEL` | flag (`1`/`0`) | unset | If explicitly set, overrides the UI's "decoder:" dropdown - `1` forces software decode regardless of what's selected there. Mainly for A/B comparisons and bug reports. |
+| `QTSCRCPY_DECODER_THREADS` | int, 0-32 | `logical CPUs - 1` (min 1) | FFmpeg software-decode thread count (`AVCodecContext::thread_count`). Irrelevant whenever hardware decode is actually active. |
+| `QTSCRCPY_DECODER_THREAD_TYPE_FRAME` | flag | unset (slice-threading) | `1` switches software decode from `FF_THREAD_SLICE` to `FF_THREAD_FRAME` (more parallelism, one extra frame of latency) - for benchmarking; Android's encoder rarely emits multiple slices per frame, so slice-threading is the default. |
+
+#### Audio
+| Variable | Type / range | Default | Effect |
+|---|---|---|---|
+| `QTSCRCPY_AUDIO_BUFFER_MS` | int, 20-200 | 25 | Target audio output buffer size. Lower = less latency, higher risk of underrun/crackle on a busy system. |
+| `QTSCRCPY_AUDIO_START_MS` | int, 5-100 | 10 | How much audio is pre-buffered before playback starts. |
+| `QTSCRCPY_AUDIO_MAX_MS` | int, 40-300 | 80 | Hard cap on buffered audio before old samples are dropped to catch back up. |
+| `QTSCRCPY_SERVER_VERSION` | string | `4.0` | scrcpy-server protocol version string used for the *audio* session specifically. |
+
+#### Recorder
+| Variable | Type / range | Default | Effect |
+|---|---|---|---|
+| `QTSCRCPY_RECORDER_QUEUE_MB` | int, 1-256 | 8 | Max bytes buffered for the recording muxer before packets are dropped (protects against disk I/O stalls). |
+| `QTSCRCPY_RECORDER_QUEUE_PACKETS` | int, 16-4096 | 240 | Same, but as a packet-count cap. |
+
+#### Server / input
+| Variable | Type / range | Default | Effect |
+|---|---|---|---|
+| `QTSCRCPY_SERVER_ROOT` | flag | unset | If explicitly set, overrides the UI's "root" checkbox for how `scrcpy-server` is launched (`su -c` vs plain shell) and its renice/ionice boost. |
+| `QSC_WAYLAND_MOUSE_SENSITIVITY` | float > 0 | `1.0` | Linux/Wayland only. Scales raw relative mouse-delta input for the warp-cursor mouse-lock fallback path (used when `Qt6::WaylandClient` isn't available - see the build log). Right sensitivity is inherently per-mouse-DPI, hence the override. |
+
+#### Diagnostics
+| Variable | Type / range | Default | Effect |
+|---|---|---|---|
+| `QTSCRCPY_TELEMETRY` | int > 0 to enable | unset (off) | Turns on extra `qInfo`/`qDebug` performance logging (frame timing percentiles, queue depths, dropped-frame counters, mailbox stats, ...) across the decoder, renderer, recorder, and audio pipeline. Off by default since it adds logging overhead on every frame. |
+| `QTSCRCPY_BUILD_TESTS` (CMake option, not a runtime env var) | `ON`/`OFF` | `OFF` | `cmake -DQTSCRCPY_BUILD_TESTS=ON` builds `QtScrcpyProtocolTests` and `QtScrcpyRenderStateMachineTests` (see `ctest`). |
+| `QTSCRCPY_SANITIZER` (CMake option) | `none`/`address`/`thread`/`undefined` | `none` | Builds with the given sanitizer instrumented in (Debug builds; disables LTO). |
+| `QSC_NATIVE_ARCH` (CMake option) | `ON`/`OFF` | `OFF` | Linux only. `ON` builds with `-march=native` (fastest, but the binary may `SIGILL` on any other CPU - don't use for anything you'll redistribute); default is the portable `-march=x86-64-v2` baseline. |
 
 ## Licence
 Since it is based on scrcpy, it uses the same license as scrcpy

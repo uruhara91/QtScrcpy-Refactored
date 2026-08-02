@@ -40,6 +40,12 @@ struct DeviceParams {
     bool display = true;              // 是否显示画面（或者仅仅后台录制）
     bool renderExpiredFrames = false; // 是否渲染延迟视频帧
     QString gameScript = "";          // 游戏映射脚本
+    // 是否优先尝试硬件解码 (VideoToolbox/D3D11VA/DXVA2/VAAPI/NVDEC，视平台而定)。
+    // true 仍然只是"优先尝试"——硬件解码不可用或打开失败时会自动退回软件解码，
+    // 并不保证一定用上硬件；false 则直接跳过硬件解码，只用软件解码。
+    // 对应 Dialog 里的 "decoder:" 下拉框。QTSCRCPY_DISABLE_HWACCEL 环境变量
+    // 如果被显式设置，会覆盖这个值（见 Decoder::tryInitHwAccel()）。
+    bool useHwDecode = true;
 };
     
 }

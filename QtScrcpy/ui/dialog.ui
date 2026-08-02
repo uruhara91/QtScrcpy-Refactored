@@ -403,6 +403,32 @@
               </property>
              </widget>
             </item>
+            <item>
+             <widget class="QLabel" name="label_decoder">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="text">
+               <string>decoder:</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QComboBox" name="decoderBox">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="toolTip">
+               <string>Hardware: tries GPU-accelerated decode first, falls back to software automatically if unavailable. Software: always decodes on the CPU (the well-tested path; may be preferable for low-latency/competitive use at low resolutions).</string>
+              </property>
+             </widget>
+            </item>
            </layout>
           </widget>
          </item>

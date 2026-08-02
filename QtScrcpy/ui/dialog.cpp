@@ -125,6 +125,12 @@ void Dialog::initUI()
     ui->maxSizeBox->addItem("1920");
     ui->maxSizeBox->addItem(tr("original"));
 
+    // Index must line up with DeviceParams::useHwDecode / Config's
+    // decoderIndex: 0 = Hardware (try GPU decode, auto-fallback to
+    // software), 1 = Software (always CPU decode).
+    ui->decoderBox->addItem(tr("Hardware (auto-fallback)"));
+    ui->decoderBox->addItem(tr("Software"));
+
     ui->formatBox->addItem("mp4");
     ui->formatBox->addItem("mkv");
 
@@ -172,6 +178,7 @@ void Dialog::updateBootConfig(bool toView)
         }
 
         ui->maxSizeBox->setCurrentIndex(config.maxSizeIndex);
+        ui->decoderBox->setCurrentIndex(config.decoderIndex);
         ui->formatBox->setCurrentIndex(config.recordFormatIndex);
         ui->recordPathEdt->setText(config.recordPath);
         ui->lockOrientationBox->setCurrentIndex(config.lockOrientationIndex);
@@ -193,6 +200,7 @@ void Dialog::updateBootConfig(bool toView)
 
         config.bitRate = getBitRate();
         config.maxSizeIndex = ui->maxSizeBox->currentIndex();
+        config.decoderIndex = ui->decoderBox->currentIndex();
         config.recordFormatIndex = ui->formatBox->currentIndex();
         config.recordPath = ui->recordPathEdt->text();
         config.lockOrientationIndex = ui->lockOrientationBox->currentIndex();
@@ -295,6 +303,9 @@ void Dialog::on_startServerBtn_clicked()
     params.serial = ui->serialBox->currentText().trimmed();
     params.maxSize = videoSize;
     params.bitRate = getBitRate();
+    // index 0 = Hardware (auto-fallback), 1 = Software - see the
+    // decoderBox tooltip / Config::UserBootConfig::decoderIndex.
+    params.useHwDecode = (ui->decoderBox->currentIndex() == 0);
     // on devices with Android >= 10, the capture frame rate can be limited
     params.maxFps = static_cast<quint32>(Config::getInstance().getMaxFps());
     params.closeScreen = ui->closeScreenCheck->isChecked();

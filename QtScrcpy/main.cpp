@@ -49,27 +49,48 @@ int main(int argc, char *argv[])
     const QString appPath = QFileInfo(executable).absoluteDir().absolutePath();
 
 #ifdef Q_OS_WIN32
-    QString adbPath = appPath + "/adb.exe";
-    if (!QFile::exists(adbPath)) {
-        adbPath = "../../../QtScrcpy/QtScrcpyCore/src/third_party/adb/win/adb.exe";
+    // Respect anything the user already exported (e.g. a custom adb.exe or
+    // a config directory outside the install folder) before falling back
+    // to the bundled-relative-to-the-executable defaults below - same
+    // policy as QTSCRCPY_ADB_PATH already has on Linux.
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_ADB_PATH")) {
+        QString adbPath = appPath + "/adb.exe";
+        if (!QFile::exists(adbPath)) {
+            adbPath = "../../../QtScrcpy/QtScrcpyCore/src/third_party/adb/win/adb.exe";
+        }
+        qputenv("QTSCRCPY_ADB_PATH", adbPath.toLocal8Bit());
     }
-    qputenv("QTSCRCPY_ADB_PATH", adbPath.toLocal8Bit());
 
-    QString serverPath = appPath + "/scrcpy-server";
-    if (!QFile::exists(serverPath)) {
-        serverPath = "../../../QtScrcpy/QtScrcpyCore/src/third_party/scrcpy-server";
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_SERVER_PATH")) {
+        QString serverPath = appPath + "/scrcpy-server";
+        if (!QFile::exists(serverPath)) {
+            serverPath = "../../../QtScrcpy/QtScrcpyCore/src/third_party/scrcpy-server";
+        }
+        qputenv("QTSCRCPY_SERVER_PATH", serverPath.toLocal8Bit());
     }
-    qputenv("QTSCRCPY_SERVER_PATH", serverPath.toLocal8Bit());
-    qputenv("QTSCRCPY_KEYMAP_PATH", (appPath + "/keymap").toLocal8Bit());
-    qputenv("QTSCRCPY_CONFIG_PATH", (appPath + "/config").toLocal8Bit());
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_KEYMAP_PATH")) {
+        qputenv("QTSCRCPY_KEYMAP_PATH", (appPath + "/keymap").toLocal8Bit());
+    }
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_CONFIG_PATH")) {
+        qputenv("QTSCRCPY_CONFIG_PATH", (appPath + "/config").toLocal8Bit());
+    }
 #endif
 
 #ifdef Q_OS_OSX
+    // Same policy as the Windows block above.
     const QString contentsPath = appPath + "/../";
-    qputenv("QTSCRCPY_ADB_PATH", (contentsPath + "MacOS/adb").toLocal8Bit());
-    qputenv("QTSCRCPY_SERVER_PATH", (contentsPath + "MacOS/scrcpy-server").toLocal8Bit());
-    qputenv("QTSCRCPY_KEYMAP_PATH", (contentsPath + "Resources/keymap").toLocal8Bit());
-    qputenv("QTSCRCPY_CONFIG_PATH", (contentsPath + "Resources/config").toLocal8Bit());
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_ADB_PATH")) {
+        qputenv("QTSCRCPY_ADB_PATH", (contentsPath + "MacOS/adb").toLocal8Bit());
+    }
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_SERVER_PATH")) {
+        qputenv("QTSCRCPY_SERVER_PATH", (contentsPath + "MacOS/scrcpy-server").toLocal8Bit());
+    }
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_KEYMAP_PATH")) {
+        qputenv("QTSCRCPY_KEYMAP_PATH", (contentsPath + "Resources/keymap").toLocal8Bit());
+    }
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_CONFIG_PATH")) {
+        qputenv("QTSCRCPY_CONFIG_PATH", (contentsPath + "Resources/config").toLocal8Bit());
+    }
 #endif
 
 #ifdef Q_OS_LINUX
@@ -86,9 +107,19 @@ int main(int argc, char *argv[])
         qputenv("QTSCRCPY_ADB_PATH",
                 (pathAdb.isEmpty() ? QStringLiteral("/usr/bin/adb") : pathAdb).toLocal8Bit());
     }
-    qputenv("QTSCRCPY_SERVER_PATH", (appPath + "/scrcpy-server").toLocal8Bit());
-    qputenv("QTSCRCPY_KEYMAP_PATH", (appPath + "/keymap").toLocal8Bit());
-    qputenv("QTSCRCPY_CONFIG_PATH", (appPath + "/config").toLocal8Bit());
+    // These three were previously unconditional qputenv() calls, silently
+    // clobbering any value the user had already exported - inconsistent
+    // with the ADB_PATH handling directly above it and unlike Windows/
+    // macOS above, so it wasn't even a documented Linux-only quirk.
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_SERVER_PATH")) {
+        qputenv("QTSCRCPY_SERVER_PATH", (appPath + "/scrcpy-server").toLocal8Bit());
+    }
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_KEYMAP_PATH")) {
+        qputenv("QTSCRCPY_KEYMAP_PATH", (appPath + "/keymap").toLocal8Bit());
+    }
+    if (!qEnvironmentVariableIsSet("QTSCRCPY_CONFIG_PATH")) {
+        qputenv("QTSCRCPY_CONFIG_PATH", (appPath + "/config").toLocal8Bit());
+    }
 #endif
 
     g_msgType = covertLogLevel(Config::getInstance().getLogLevel());

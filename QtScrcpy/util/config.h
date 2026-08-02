@@ -12,6 +12,10 @@ struct UserBootConfig
     int maxSizeIndex = 0;
     int recordFormatIndex = 0;
     int lockOrientationIndex = 0;
+    // Index into Dialog's "decoder:" dropdown: 0 = Hardware (tries
+    // hardware decode first, auto-falls back to software), 1 = Software
+    // (always software decode). Feeds DeviceParams::useHwDecode.
+    int decoderIndex = 0;
     bool recordScreen     = false;
     bool recordBackground = false;
     bool reverseConnect   = true;

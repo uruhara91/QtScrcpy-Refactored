@@ -70,10 +70,11 @@ constexpr std::array<AVHWDeviceType, 0> kHwCandidates{};
 
 } // namespace
 
-Decoder::Decoder(FrameCallback onFrame, QObject *parent)
+Decoder::Decoder(FrameCallback onFrame, bool useHwDecode, QObject *parent)
     : QThread(parent)
     , m_vb(std::make_unique<VideoBuffer>())
     , m_onFrame(std::move(onFrame))
+    , m_hwDecodePreferred(useHwDecode)
 {
     m_packetQueue.reserve(MAX_PACKET_QUEUE_SIZE);
     m_telemetryEnabled = qsc::telemetry::enabled();
@@ -257,8 +258,22 @@ AVPixelFormat Decoder::getHwFormat(AVCodecContext *ctx, const AVPixelFormat *pix
 bool Decoder::tryInitHwAccel(const AVCodec *codec)
 {
     if (kHwCandidates.empty()) return false; // unknown/unsupported platform
-    if (qsc::telemetry::environmentFlag("QTSCRCPY_DISABLE_HWACCEL", false)) {
-        qInfo("Decoder: hardware decode disabled via QTSCRCPY_DISABLE_HWACCEL");
+
+    // QTSCRCPY_DISABLE_HWACCEL remains available as an emergency
+    // override (e.g. for debugging) even with the UI "decoder:" dropdown
+    // now driving this normally via m_hwDecodePreferred - if explicitly
+    // set, it takes precedence over whatever the UI has configured. Same
+    // pattern as QTSCRCPY_SERVER_ROOT vs DeviceParams::useRoot in
+    // server.cpp.
+    const bool disabled = qEnvironmentVariableIsSet("QTSCRCPY_DISABLE_HWACCEL")
+        ? qsc::telemetry::environmentFlag("QTSCRCPY_DISABLE_HWACCEL", false)
+        : !m_hwDecodePreferred;
+
+    if (disabled) {
+        qInfo("Decoder: hardware decode disabled (%s)",
+              qEnvironmentVariableIsSet("QTSCRCPY_DISABLE_HWACCEL")
+                  ? "via QTSCRCPY_DISABLE_HWACCEL"
+                  : "user preference: decoder dropdown set to Software");
         return false;
     }
 

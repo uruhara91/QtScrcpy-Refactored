@@ -59,7 +59,15 @@ public:
                                             std::span<const uint8_t> dataV,
                                             int linesizeY, int linesizeU, int linesizeV)>;
 
-    explicit Decoder(FrameCallback onFrame, QObject *parent = nullptr);
+    // useHwDecode: the user's saved preference (Dialog's "decoder:"
+    // dropdown, DeviceParams::useHwDecode) for whether to attempt hardware
+    // decode at all. true still means "try hardware, fall back to
+    // software automatically if it's unavailable or fails to open" - not
+    // a guarantee hardware decode ends up used; false always skips
+    // straight to software. QTSCRCPY_DISABLE_HWACCEL, if explicitly set,
+    // overrides this (see tryInitHwAccel()) the same way
+    // QTSCRCPY_SERVER_ROOT overrides DeviceParams::useRoot in server.cpp.
+    explicit Decoder(FrameCallback onFrame, bool useHwDecode = true, QObject *parent = nullptr);
     ~Decoder() override;
 
     [[nodiscard]] bool open();
@@ -190,6 +198,7 @@ private:
     AVPixelFormat m_hwPixFmt = AV_PIX_FMT_NONE;
     AVHWDeviceType m_hwDeviceType = AV_HWDEVICE_TYPE_NONE;
     std::atomic_bool m_hwAccelActive{false};
+    bool m_hwDecodePreferred = true; // constructor's useHwDecode, see there
     AVFrame *m_hwTransferFrame = nullptr; // system-memory copy of the hw surface (native format, usually NV12)
     AVFrame *m_hwSwFrame = nullptr;       // m_hwTransferFrame reshuffled to YUV420P
     std::unique_ptr<SwsContext, SwsContextDeleter> m_hwSwsCtx;

@@ -37,7 +37,8 @@ Device::Device(DeviceParams params, QObject *parent)
                 if (m_frameSink) {
                     m_frameSink->submitFrame(w, h, y, u, v, sy, su, sv);
                 }
-            });
+            },
+            m_params.useHwDecode);
 
         m_fileHandler = std::make_unique<FileHandler>();
         m_controller = std::make_unique<Controller>(

@@ -179,10 +179,13 @@ private:
     // requirement to actually decode anything.
     bool tryInitHwAccel(const AVCodec *codec);
     void resetHwAccelState();
-    // Reads back the just-decoded hardware surface into system memory and
-    // reshuffles it into YUV420P in m_hwSwFrame. Returns false if the
-    // surface could not be read back (the caller drops that frame).
-    bool transferHwFrame();
+    // Reads back the just-decoded hardware surface into system memory,
+    // preferring a direct YUV420P transfer (skipping the sws_scale
+    // reshuffle) when the driver supports it - see the definition for the
+    // one-time-per-session probe logic. Returns the frame to present
+    // (either m_hwTransferFrame or m_hwSwFrame), or nullptr if the
+    // surface could not be read back at all (the caller drops that frame).
+    AVFrame *transferHwFrame();
     static AVPixelFormat getHwFormat(AVCodecContext *ctx, const AVPixelFormat *pixFmts);
 
 private:
@@ -200,8 +203,13 @@ private:
     std::atomic_bool m_hwAccelActive{false};
     bool m_hwDecodePreferred = true; // constructor's useHwDecode, see there
     AVFrame *m_hwTransferFrame = nullptr; // system-memory copy of the hw surface (native format, usually NV12)
-    AVFrame *m_hwSwFrame = nullptr;       // m_hwTransferFrame reshuffled to YUV420P
+    AVFrame *m_hwSwFrame = nullptr;       // m_hwTransferFrame reshuffled to YUV420P (only used when a direct transfer isn't possible)
     std::unique_ptr<SwsContext, SwsContextDeleter> m_hwSwsCtx;
+    // Whether transferHwFrame() has already run its one-time
+    // direct-YUV420P-transfer probe for the current session (reset
+    // whenever m_hwTransferFrame is unreffed on a resolution-change
+    // flush, so a new resolution gets re-probed too).
+    bool m_hwTransferFormatProbed = false;
 
     QMutex m_queueMutex;
     QWaitCondition m_queueCondition;

@@ -99,6 +99,7 @@ private:
     void setFrameSize(const QSize &frameSize);
     void checkFences();
     void logInitFailureDiagnostics();
+    void logGlPlatformBackend();
     void scheduleUpdate();
 
 private:

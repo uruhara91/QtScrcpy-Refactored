@@ -321,26 +321,60 @@ void Decoder::resetHwAccelState()
     m_hwAccelActive.store(false, std::memory_order_release);
     m_hwPixFmt = AV_PIX_FMT_NONE;
     m_hwDeviceType = AV_HWDEVICE_TYPE_NONE;
+    m_hwTransferFormatProbed = false;
     if (m_codecCtx) {
         av_buffer_unref(&m_codecCtx->hw_device_ctx);
     }
     m_hwDeviceCtx.reset();
 }
 
-bool Decoder::transferHwFrame()
+AVFrame *Decoder::transferHwFrame()
 {
-    if (!m_hwTransferFrame || !m_hwSwFrame) return false;
+    if (!m_hwTransferFrame || !m_hwSwFrame) return nullptr;
 
-    if (av_hwframe_transfer_data(m_hwTransferFrame, m_recvFrame, 0) < 0) {
+    if (!m_hwTransferFormatProbed) {
+        // First hardware frame of this session (or since the last
+        // resolution change, which unrefs m_hwTransferFrame and clears
+        // this flag - see the flush handling in run()). Try asking the
+        // transfer to hand back YUV420P directly instead of leaving the
+        // format unset (which lets FFmpeg auto-pick, almost always
+        // NV12). Several VAAPI/NVDEC driver combinations support a
+        // direct YUV420P transfer even though NV12 is the more common
+        // native surface layout; when it works, it skips the sws_scale
+        // pass below for the rest of the session - one less full-frame
+        // pass in the hot path, for free. This is a one-time probe, not
+        // a per-frame gamble: if it fails here, that's remembered (by
+        // simply leaving the format unset from this point on) so later
+        // frames go straight to the auto-negotiated path without
+        // wasting time repeating an attempt already known to fail.
+        m_hwTransferFrame->format = AV_PIX_FMT_YUV420P;
+        if (av_hwframe_transfer_data(m_hwTransferFrame, m_recvFrame, 0) < 0) {
+            av_frame_unref(m_hwTransferFrame); // back to blank/format-unset
+            if (av_hwframe_transfer_data(m_hwTransferFrame, m_recvFrame, 0) < 0) {
+                return nullptr;
+            }
+        }
+        m_hwTransferFormatProbed = true;
+        qInfo() << "Decoder: hardware frame transfer format:"
+                << (m_hwTransferFrame->format == AV_PIX_FMT_YUV420P
+                        ? "YUV420P direct (sws_scale reshuffle skipped every frame)"
+                        : "native surface format (one sws_scale reshuffle per frame)");
+    } else if (av_hwframe_transfer_data(m_hwTransferFrame, m_recvFrame, 0) < 0) {
         // Reading the surface back can fail transiently (driver hiccup,
-        // VRAM pressure). Drop this one frame instead of tearing down the
-        // whole decode session - the next frame tries independently.
-        return false;
+        // VRAM pressure). Drop this one frame instead of tearing down
+        // the whole decode session - the next frame tries independently.
+        return nullptr;
+    }
+
+    const auto sourceFormat = static_cast<AVPixelFormat>(m_hwTransferFrame->format);
+    if (sourceFormat == AV_PIX_FMT_YUV420P) {
+        // Already exactly the layout the rest of the pipeline wants -
+        // hand it back directly, no conversion pass at all.
+        return m_hwTransferFrame;
     }
 
     const int width = m_recvFrame->width;
     const int height = m_recvFrame->height;
-    const auto sourceFormat = static_cast<AVPixelFormat>(m_hwTransferFrame->format);
 
     const bool needsRealloc = !m_hwSwFrame->buf[0] ||
                                m_hwSwFrame->width != width ||
@@ -350,32 +384,38 @@ bool Decoder::transferHwFrame()
         m_hwSwFrame->format = AV_PIX_FMT_YUV420P;
         m_hwSwFrame->width = width;
         m_hwSwFrame->height = height;
-        if (av_frame_get_buffer(m_hwSwFrame, 32) < 0) return false;
+        if (av_frame_get_buffer(m_hwSwFrame, 32) < 0) return nullptr;
     } else if (av_frame_make_writable(m_hwSwFrame) < 0) {
-        return false;
+        return nullptr;
     }
 
-    // The hw backend's natural transfer format (almost always NV12 across
-    // VAAPI/D3D11VA/DXVA2/VideoToolbox/NVDEC) is reshuffled into planar
-    // YUV420P here so the rest of the pipeline - which was written for,
-    // and already thoroughly exercises, plain software-decoded YUV420P -
-    // needs zero changes to support hardware decode. Width/height are
-    // identical on both sides, so this is a pure plane-layout conversion,
-    // not a rescale; cost is a single SIMD-optimized libswscale pass, tiny
-    // next to the decode work it replaces.
+    // The hw backend's natural transfer format (typically NV12 across
+    // VAAPI/D3D11VA/DXVA2/VideoToolbox/NVDEC when the direct-YUV420P
+    // probe above didn't pan out) is reshuffled into planar YUV420P here
+    // so the rest of the pipeline - which was written for, and already
+    // thoroughly exercises, plain software-decoded YUV420P - needs zero
+    // changes to support hardware decode. Width/height are identical on
+    // both sides, so this is a pure plane-layout conversion, not a
+    // rescale - SWS_POINT (nearest-neighbor) rather than SWS_BILINEAR
+    // because there is no actual resampling to do here (the chroma
+    // planes are already at the correct 4:2:0 subsampling on both sides,
+    // just interleaved on one and planar on the other), so bilinear's
+    // interpolation math would be pure unneeded overhead. Cost is a
+    // single SIMD-optimized libswscale pass, tiny next to the decode
+    // work it replaces.
     SwsContext *rawSws = sws_getCachedContext(
         m_hwSwsCtx.release(),
         width, height, sourceFormat,
         width, height, AV_PIX_FMT_YUV420P,
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
+        SWS_POINT, nullptr, nullptr, nullptr);
     m_hwSwsCtx.reset(rawSws);
-    if (!m_hwSwsCtx) return false;
+    if (!m_hwSwsCtx) return nullptr;
 
     sws_scale(m_hwSwsCtx.get(),
               m_hwTransferFrame->data, m_hwTransferFrame->linesize, 0, height,
               m_hwSwFrame->data, m_hwSwFrame->linesize);
 
-    return true;
+    return m_hwSwFrame;
 }
 
 bool Decoder::enqueuePacket(PacketHandle packet)
@@ -485,6 +525,7 @@ void Decoder::run()
             // m_hwSwFrame at their new size instead of assuming the
             // previous frame's dimensions still apply (see below).
             if (m_hwTransferFrame) av_frame_unref(m_hwTransferFrame);
+            m_hwTransferFormatProbed = false;
         }
 
         if (m_telemetryEnabled) {
@@ -538,19 +579,17 @@ void Decoder::drainDecodedFrames()
         // VASurfaceID/CVPixelBuffer/ID3D11Texture2D handle wrapped in the
         // AVFrame, format == m_hwPixFmt, data[]/linesize[] not directly
         // readable) rather than plain mapped memory. transferHwFrame()
-        // reads it back into system memory and reshuffles it into YUV420P
-        // in m_hwSwFrame, so everything downstream of this point - the
-        // span/stride logic, VideoBuffer, the renderer - stays completely
-        // unaware of whether hw accel is even active.
+        // reads it back into system memory - and, on drivers that support
+        // it, directly as YUV420P, skipping the sws_scale reshuffle
+        // entirely (see there) - so everything downstream of this point -
+        // the span/stride logic, VideoBuffer, the renderer - stays
+        // completely unaware of whether hw accel is even active.
         const AVFrame *presentFrame = m_recvFrame;
         bool dropFrame = false;
         if (m_hwAccelActive.load(std::memory_order_relaxed) &&
             m_recvFrame->format == static_cast<int>(m_hwPixFmt)) {
-            if (transferHwFrame()) {
-                presentFrame = m_hwSwFrame;
-            } else {
-                dropFrame = true;
-            }
+            presentFrame = transferHwFrame();
+            dropFrame = (presentFrame == nullptr);
         }
 
         if (dropFrame) {

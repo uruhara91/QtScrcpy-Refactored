@@ -12,6 +12,11 @@
 #include <limits>
 #include <mutex>
 
+#if __has_include(<QtGui/qopenglcontext_platform.h>)
+#include <QtGui/qopenglcontext_platform.h>
+#define QSC_HAS_GL_NATIVE_INTERFACE 1
+#endif
+
 // ---------------------------------------------------------------------
 // Shaders
 // ---------------------------------------------------------------------
@@ -379,10 +384,50 @@ void QYuvOpenGLWidget::logInitFailureDiagnostics()
            "renderer without real GPU acceleration.";
 }
 
+void QYuvOpenGLWidget::logGlPlatformBackend()
+{
+    // Purely informational, no behavior depends on this. It answers one
+    // specific question: is this widget's GL context EGL-backed? That is
+    // the single fact that determines whether a *true* zero-copy render
+    // path (importing a VAAPI-decoded surface as a GL texture directly
+    // via VA-API's DMA-BUF export + EGL_EXT_image_dma_buf_import, with no
+    // CPU copy at all - as opposed to the current copy-back-then-upload
+    // path in Decoder::transferHwFrame()) is even reachable at all. Qt's
+    // default "xcb" platform plugin on Linux traditionally hands out a
+    // GLX context for a plain windowed QOpenGLWidget, in which case that
+    // path isn't available without forcing EGL (QT_XCB_GL_INTEGRATION=
+    // xcb_egl) or a different platform integration - both bigger changes
+    // than they might sound, since they can affect window-manager/
+    // compositor interop in ways this note doesn't decide for you.
+#ifdef QSC_HAS_GL_NATIVE_INTERFACE
+    QOpenGLContext *ctx = context();
+    if (!ctx) return;
+
+    QString backend = QStringLiteral("unknown");
+#if QT_CONFIG(egl) || defined(Q_CLANG_QDOC)
+    if (ctx->nativeInterface<QNativeInterface::QEGLContext>()) {
+        backend = QStringLiteral("EGL");
+    }
+#endif
+#if QT_CONFIG(xcb_glx_plugin) || defined(Q_CLANG_QDOC)
+    if (backend == QStringLiteral("unknown") &&
+        ctx->nativeInterface<QNativeInterface::QGLXContext>()) {
+        backend = QStringLiteral("GLX");
+    }
+#endif
+    qInfo().noquote() << "QYuvOpenGLWidget: GL platform backend:" << backend
+                       << (backend == QStringLiteral("GLX")
+                               ? "(a DMA-BUF/EGLImage zero-copy path would need "
+                                 "an EGL context instead - not reachable as-is)"
+                               : "");
+#endif
+}
+
 void QYuvOpenGLWidget::initializeGL()
 {
     const bool dsaAvailable = initializeOpenGLFunctions();
     m_useDsaPath.store(dsaAvailable, std::memory_order_release);
+    logGlPlatformBackend();
 
     if (!dsaAvailable) {
         // Most notably macOS: Apple has capped OpenGL at 4.1 Core since

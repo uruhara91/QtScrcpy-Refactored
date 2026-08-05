@@ -485,48 +485,57 @@ QMargins VideoForm::getMargins(bool vertical)
 
 void VideoForm::updateShowSize(const QSize &newSize)
 {
-    if (m_frameSize != newSize) {
-        m_frameSize = newSize;
+    if (m_frameSize == newSize) return;
 
-        m_widthHeightRatio = 1.0f * newSize.width() / newSize.height();
-        ui->keepRatioWidget->setWidthHeightRatio(m_widthHeightRatio);
+    m_frameSize = newSize;
 
-        bool vertical = m_widthHeightRatio < 1.0f ? true : false;
-        QSize showSize = newSize;
-        QRect screenRect = getScreenRect();
-        if (screenRect.isEmpty()) {
-            qWarning() << "getScreenRect is empty";
-            return;
-        }
-        if (vertical) {
-            showSize.setHeight(qMin(newSize.height(), screenRect.height() - 200));
-            showSize.setWidth(showSize.height() * m_widthHeightRatio);
-        } else {
-            showSize.setWidth(qMin(newSize.width(), screenRect.width() / 2));
-            showSize.setHeight(showSize.width() / m_widthHeightRatio);
-        }
+    m_widthHeightRatio = 1.0f * newSize.width() / newSize.height();
+    ui->keepRatioWidget->setWidthHeightRatio(m_widthHeightRatio);
 
-        if (isFullScreen() && qsc::IDeviceManage::getInstance().getDevice(m_serial)) {
-            switchFullScreen();
-        }
+    bool vertical = m_widthHeightRatio < 1.0f ? true : false;
+    QSize showSize = newSize;
+    QRect screenRect = getScreenRect();
+    if (screenRect.isEmpty()) {
+        // No screen geometry available right now (e.g. transiently during
+        // startup, or a display reconfiguration mid-session) - rather
+        // than abandon the resize entirely and leave the window at a
+        // stale size, fall back to the raw frame size unclamped. This
+        // *could* end up larger than the actual screen in the rare case
+        // this branch is hit, but that's still strictly better than
+        // getting stuck: m_frameSize was already latched to newSize just
+        // above, and submitFrame()'s change-detection (videoform.h) only
+        // triggers another attempt at this whole function when the frame
+        // size changes *again* - an unchanged size after a rotation
+        // settles would otherwise never get retried at all.
+        qWarning() << "getScreenRect is empty; skipping screen-size clamp for this resize";
+    } else if (vertical) {
+        showSize.setHeight(qMin(newSize.height(), screenRect.height() - 200));
+        showSize.setWidth(showSize.height() * m_widthHeightRatio);
+    } else {
+        showSize.setWidth(qMin(newSize.width(), screenRect.width() / 2));
+        showSize.setHeight(showSize.width() / m_widthHeightRatio);
+    }
 
-        if (isMaximized()) {
-            showNormal();
-        }
+    if (isFullScreen() && qsc::IDeviceManage::getInstance().getDevice(m_serial)) {
+        switchFullScreen();
+    }
 
+    if (isMaximized()) {
+        showNormal();
+    }
+
+    if (m_skin) {
+        QMargins m = getMargins(vertical);
+        showSize.setWidth(showSize.width() + m.left() + m.right());
+        showSize.setHeight(showSize.height() + m.top() + m.bottom());
+    }
+
+    if (showSize != size()) {
+        resize(showSize);
         if (m_skin) {
-            QMargins m = getMargins(vertical);
-            showSize.setWidth(showSize.width() + m.left() + m.right());
-            showSize.setHeight(showSize.height() + m.top() + m.bottom());
+            updateStyleSheet(vertical);
         }
-
-        if (showSize != size()) {
-            resize(showSize);
-            if (m_skin) {
-                updateStyleSheet(vertical);
-            }
-            moveCenter();
-        }
+        moveCenter();
     }
 }
 
@@ -1030,6 +1039,27 @@ void VideoForm::resizeEvent(QResizeEvent *event)
         } else {
             setMinimumWidth(0);
         }
+    }
+
+    // Pointer confinement via the rect-based path (X11 xcb_grab_pointer /
+    // Windows ClipCursor - not the Wayland native relative-pointer lock,
+    // which is relative-motion-based and uses no rect at all) computes
+    // its confinement region from the video widget's geometry at the
+    // moment grab was last (re-)enabled. A resize - most commonly the
+    // device rotating mid-session, which changes the mirrored window's
+    // aspect ratio via updateShowSize() - left that region stale until
+    // grab was explicitly toggled off/on again, so the pointer could end
+    // up confined to where the window *used* to be. Most likely to
+    // actually matter while playing a game with the pointer locked,
+    // which is also exactly when a device is likely to rotate mid-
+    // session. Re-applying here keeps grab correctly following the
+    // window across any resize.
+    bool shouldRefreshGrabRect = m_platformMouseGrabActive;
+#ifdef QSC_HAVE_WAYLAND_RELATIVE_POINTER
+    shouldRefreshGrabRect = shouldRefreshGrabRect && !m_waylandNativeLockActive;
+#endif
+    if (shouldRefreshGrabRect) {
+        MouseTap::getInstance()->enableMouseEventTap(getGrabCursorRect(), true);
     }
 }
 

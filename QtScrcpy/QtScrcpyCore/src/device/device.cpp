@@ -327,11 +327,31 @@ void Device::initSignals()
             // A later session packet (e.g. after a device-side rotate,
             // resize, or a client-initiated RESIZE_DISPLAY) changed the
             // size again. Re-opening the recorder mid-recording with a
-            // different size is not supported here; just log it so it's
-            // visible if it happens.
-            qWarning() << "Video size changed mid-session to" << size
-                       << "(clientResized=" << clientResized
-                       << "); recorder output size was not updated";
+            // different size isn't supported - MP4/MKV don't cleanly
+            // support a stream's declared dimensions changing partway
+            // through, and Recorder::open() writes codecpar->width/height
+            // once, from whatever size was current at the time. Silently
+            // continuing to feed it packets at the new size would produce
+            // a file whose container-level metadata is wrong for the
+            // rest of the recording - how that actually looks when
+            // played back depends entirely on how forgiving a given
+            // player is about trusting the in-stream SPS over the
+            // container header. Stop and finalize the recording cleanly
+            // instead: everything captured before this point is written
+            // out correctly (valid, playable file, just shorter than
+            // expected), and it's a clear, loud signal rather than a
+            // silently-wrong tail. Same shutdown sequence
+            // disconnectDevice() already uses for the recorder.
+            if (m_recorder && m_recorder->isRunning()) {
+                qWarning() << "Video size changed mid-session to" << size
+                           << "(clientResized=" << clientResized
+                           << "); stopping the recording - a resolution "
+                              "change mid-recording is not supported. "
+                              "Start a new recording to capture the new size.";
+                m_recorder->stopRecorder();
+                m_recorder->wait();
+                m_recorder.reset();
+            }
         });
 
         connect(m_stream.get(), &Demuxer::getFrame, this,

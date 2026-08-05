@@ -332,6 +332,34 @@ AVFrame *Decoder::transferHwFrame()
 {
     if (!m_hwTransferFrame || !m_hwSwFrame) return nullptr;
 
+    // A resolution change (most commonly the device rotating - Android
+    // reconfigures its encoder with swapped width/height and emits a new
+    // SPS) arrives as an entirely ordinary mid-stream frame. Nothing else
+    // in this class's flush/recovery bookkeeping is necessarily
+    // triggered by it: m_flushBeforeNextDecode exists purely for
+    // *network*-side recovery (queue overflow / keyframe recovery - see
+    // enqueuePacket()), a different situation entirely, and is not set
+    // just because the stream's dimensions changed. m_hwTransferFrame's
+    // buffer, once allocated, is deliberately reused across frames for
+    // performance (avoids a realloc every frame) - but reusing it at the
+    // OLD dimensions once the incoming surface is a different size is
+    // exactly the kind of thing a driver can fail on silently rather
+    // than error cleanly. This check is cheap (integer comparisons) and
+    // catches it before that happens; getting this wrong previously
+    // showed up as: the mirror freezes on device rotation and stays
+    // frozen (every subsequent frame silently dropped) until reconnecting.
+    if (m_hwTransferFrame->buf[0] &&
+        (m_hwTransferFrame->width != m_recvFrame->width ||
+         m_hwTransferFrame->height != m_recvFrame->height)) {
+        av_frame_unref(m_hwTransferFrame);
+        // Re-probe direct-YUV420P-transfer support at the new resolution
+        // too, rather than assuming it's unaffected - cheap (happens
+        // only right after a resolution change, not every frame) and
+        // avoids relying on an assumption that may not hold on every
+        // driver.
+        m_hwTransferFormatProbed = false;
+    }
+
     if (!m_hwTransferFormatProbed) {
         // First hardware frame of this session (or since the last
         // resolution change, which unrefs m_hwTransferFrame and clears

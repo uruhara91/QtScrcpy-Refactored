@@ -38,7 +38,36 @@ Device::Device(DeviceParams params, QObject *parent)
                     m_frameSink->submitFrame(w, h, y, u, v, sy, su, sv);
                 }
             },
-            m_params.useHwDecode);
+            m_params.useHwDecode,
+            [this](int w, int h, const DrmFrameDescriptor &drm,
+                   std::function<void()> release) -> bool {
+                std::shared_lock<std::shared_mutex> lock(m_frameSinkMutex);
+                if (!m_frameSink) {
+                    release();
+                    return false;
+                }
+                // Translate Decoder's internal, FFmpeg/library-boundary-
+                // agnostic DrmFrameDescriptor into the public API's
+                // qsc::HwFrameDrmDescriptor (QtScrcpyCoreDef.h) - the two
+                // are intentionally field-for-field identical (see the
+                // comment on DrmFrameDescriptor in decoder.h for why they
+                // aren't just the same type).
+                qsc::HwFrameDrmDescriptor publicDrm;
+                publicDrm.planeCount = drm.planeCount;
+                for (int i = 0; i < drm.planeCount &&
+                                i < qsc::HwFrameDrmDescriptor::kMaxPlanes; ++i) {
+                    qsc::HwFramePlane &out = publicDrm.planes[i];
+                    const DrmFramePlane &in = drm.planes[i];
+                    out.fd = in.fd;
+                    out.fourcc = static_cast<quint32>(in.fourcc);
+                    out.modifier = static_cast<quint64>(in.modifier);
+                    out.offset = in.offset;
+                    out.pitch = in.pitch;
+                    out.width = in.width;
+                    out.height = in.height;
+                }
+                return m_frameSink->submitHwFrame(w, h, publicDrm, std::move(release));
+            });
 
         m_fileHandler = std::make_unique<FileHandler>();
         m_controller = std::make_unique<Controller>(

@@ -14,6 +14,9 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+#ifdef Q_OS_LINUX
+#include <libavutil/hwcontext_drm.h>
+#endif
 }
 
 void AVCodecContextDeleter::operator()(AVCodecContext *ctx) const
@@ -70,14 +73,18 @@ constexpr std::array<AVHWDeviceType, 0> kHwCandidates{};
 
 } // namespace
 
-Decoder::Decoder(FrameCallback onFrame, bool useHwDecode, QObject *parent)
+Decoder::Decoder(FrameCallback onFrame, bool useHwDecode,
+                 HwFrameCallback onHwFrame, QObject *parent)
     : QThread(parent)
     , m_vb(std::make_unique<VideoBuffer>())
     , m_onFrame(std::move(onFrame))
+    , m_onHwFrame(std::move(onHwFrame))
     , m_hwDecodePreferred(useHwDecode)
 {
     m_packetQueue.reserve(MAX_PACKET_QUEUE_SIZE);
     m_telemetryEnabled = qsc::telemetry::enabled();
+    m_zeroCopyRequested = static_cast<bool>(m_onHwFrame) &&
+        qsc::telemetry::environmentFlag("QTSCRCPY_EXPERIMENTAL_ZEROCOPY", false);
 
     if (m_vb) {
         connect(m_vb.get(), &VideoBuffer::updateFPS,
@@ -322,11 +329,234 @@ void Decoder::resetHwAccelState()
     m_hwPixFmt = AV_PIX_FMT_NONE;
     m_hwDeviceType = AV_HWDEVICE_TYPE_NONE;
     m_hwTransferFormatProbed = false;
+    m_zeroCopySetupDone = false;
+    m_zeroCopyAvailable = false;
+    m_zeroCopySinkDeclined = false;
+    m_zeroCopyActive.store(false, std::memory_order_release);
+    m_drmFramesCtx.reset();
+    m_drmDeviceCtx.reset();
     if (m_codecCtx) {
         av_buffer_unref(&m_codecCtx->hw_device_ctx);
     }
     m_hwDeviceCtx.reset();
 }
+
+// ---------------------------------------------------------------------
+// Experimental zero-copy hardware-frame handoff (VAAPI / Linux only)
+// ---------------------------------------------------------------------
+// The copy-back path above (transferHwFrame()) reads a decoded VAAPI
+// surface back into system memory with av_hwframe_transfer_data(), then
+// (usually) reshuffles it with sws_scale(). That readback is itself a
+// GPU->CPU synchronization point and a real memory copy - on hardware
+// where that turns out to cost more than it saves (see the telemetry
+// discussion in AUDIT_FIXES.md), the alternative is to never leave the
+// GPU at all: export the decoded VAAPI surface as a set of DMA-BUF file
+// descriptors (av_hwframe_map() to AV_PIX_FMT_DRM_PRIME, which FFmpeg
+// implements via VAAPI's vaExportSurfaceHandle() internally) and hand
+// those off to the renderer to import directly as GL textures via EGL's
+// EGL_EXT_image_dma_buf_import extension - no CPU ever touches the pixel
+// data.
+//
+// This is meaningfully riskier than the copy-back path: it depends on
+// the GL context actually being EGL-backed (not GLX - see
+// QYuvOpenGLWidget::logGlPlatformBackend()), on the specific driver
+// supporting DMA-BUF export/import for the exact surface layout in use,
+// and on getting several non-obvious pieces of cross-API plumbing
+// exactly right (device/frames-context derivation, DRM format modifiers,
+// frame lifetime across the decoder/render thread boundary). Every
+// fallible step below is treated as exactly that - fallible - and falls
+// back to the existing, proven transferHwFrame() copy-back path rather
+// than ever hard-failing. Opt-in only, via QTSCRCPY_EXPERIMENTAL_ZEROCOPY
+// (see the constructor) - not the default, and not intended to be until
+// it's had real hardware validation across more than one machine.
+#ifdef Q_OS_LINUX
+
+bool Decoder::trySetupZeroCopy(AVFrame *vaapiFrame)
+{
+    m_zeroCopySetupDone = true; // one attempt per session either way
+
+    if (!vaapiFrame->hw_frames_ctx) {
+        qWarning("Decoder: zero-copy setup skipped - decoded frame has no "
+                 "hw_frames_ctx");
+        return false;
+    }
+
+    AVBufferRef *rawDrmDeviceCtx = nullptr;
+    int result = av_hwdevice_ctx_create(&rawDrmDeviceCtx, AV_HWDEVICE_TYPE_DRM,
+                                          nullptr, nullptr, 0);
+    if (result < 0) {
+        char errBuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(result, errBuf, sizeof(errBuf));
+        qWarning("Decoder: zero-copy unavailable - could not open a DRM "
+                 "device (%s); staying on the hardware copy-back path",
+                 errBuf);
+        return false;
+    }
+    m_drmDeviceCtx.reset(rawDrmDeviceCtx);
+
+    AVBufferRef *rawDrmFramesCtx = nullptr;
+    result = av_hwframe_ctx_create_derived(&rawDrmFramesCtx, AV_PIX_FMT_DRM_PRIME,
+                                             m_drmDeviceCtx.get(),
+                                             vaapiFrame->hw_frames_ctx,
+                                             AV_HWFRAME_MAP_READ);
+    if (result < 0) {
+        char errBuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(result, errBuf, sizeof(errBuf));
+        qWarning("Decoder: zero-copy unavailable - could not derive a DRM "
+                 "frames context from the VAAPI one (%s); staying on the "
+                 "hardware copy-back path", errBuf);
+        m_drmDeviceCtx.reset();
+        return false;
+    }
+    m_drmFramesCtx.reset(rawDrmFramesCtx);
+
+    m_zeroCopyAvailable = true;
+    qInfo("Decoder: zero-copy hardware frame export is available "
+          "(VAAPI -> DRM_PRIME) and will be offered to the renderer");
+    return true;
+}
+
+bool Decoder::trySubmitZeroCopyFrame(AVFrame *vaapiFrame)
+{
+    if (!m_zeroCopyRequested || !m_onHwFrame || m_zeroCopySinkDeclined) return false;
+
+    if (!m_zeroCopySetupDone) {
+        if (!trySetupZeroCopy(vaapiFrame)) return false;
+    }
+    if (!m_zeroCopyAvailable) return false;
+
+    AVFrame *mapped = av_frame_alloc();
+    if (!mapped) return false;
+
+    mapped->hw_frames_ctx = av_buffer_ref(m_drmFramesCtx.get());
+    if (!mapped->hw_frames_ctx) {
+        av_frame_free(&mapped);
+        return false;
+    }
+    mapped->format = AV_PIX_FMT_DRM_PRIME;
+
+    if (av_hwframe_map(mapped, vaapiFrame, AV_HWFRAME_MAP_READ) < 0) {
+        // Can genuinely be transient (e.g. a driver hiccup) rather than a
+        // fundamental incompatibility, so this deliberately does NOT set
+        // m_zeroCopySinkDeclined / give up for the rest of the session -
+        // only an explicit decline from the sink itself does that, below.
+        qWarning("Decoder: zero-copy frame mapping failed for this frame; "
+                 "using the copy-back path for it instead");
+        av_frame_free(&mapped);
+        return false;
+    }
+
+    const auto *drmDesc = reinterpret_cast<const AVDRMFrameDescriptor *>(mapped->data[0]);
+    if (!drmDesc || drmDesc->nb_layers <= 0 ||
+        drmDesc->nb_layers > DrmFrameDescriptor::kMaxPlanes) {
+        qWarning("Decoder: zero-copy frame has an unexpected layer count "
+                 "(%d); using the copy-back path for it instead",
+                 drmDesc ? drmDesc->nb_layers : -1);
+        av_frame_free(&mapped);
+        return false;
+    }
+
+    const int width = vaapiFrame->width;
+    const int height = vaapiFrame->height;
+
+    DrmFrameDescriptor drm;
+    drm.planeCount = drmDesc->nb_layers;
+    for (int i = 0; i < drmDesc->nb_layers; ++i) {
+        const AVDRMLayerDescriptor &layer = drmDesc->layers[i];
+        if (layer.nb_planes != 1) {
+            // Every layer FFmpeg's VAAPI -> DRM_PRIME mapping produces
+            // for an 8-bit 4:2:0 surface (the only kind this decoder ever
+            // hands to hardware decode - Android's H.264 encoders are
+            // always 8-bit) is expected to be exactly one plane per layer
+            // (a separate luma layer and chroma layer, not one combined
+            // multi-plane layer). A different shape here means an
+            // assumption this code depends on doesn't hold on this
+            // driver - safer to bail than guess at the layout.
+            qWarning("Decoder: zero-copy layer %d has %d planes (expected "
+                     "1); using the copy-back path for this frame",
+                     i, layer.nb_planes);
+            av_frame_free(&mapped);
+            return false;
+        }
+        const AVDRMPlaneDescriptor &plane = layer.planes[0];
+        if (plane.object_index < 0 || plane.object_index >= drmDesc->nb_objects) {
+            qWarning("Decoder: zero-copy layer %d has an out-of-range "
+                     "object_index; using the copy-back path for this frame", i);
+            av_frame_free(&mapped);
+            return false;
+        }
+        const AVDRMObjectDescriptor &object = drmDesc->objects[plane.object_index];
+
+        DrmFramePlane &out = drm.planes[i];
+        out.fd = object.fd;
+        out.fourcc = layer.format;
+        out.modifier = object.format_modifier;
+        out.offset = plane.offset;
+        out.pitch = plane.pitch;
+        // Layer 0 is always the full-resolution luma plane and layer 1
+        // (when present) the 4:2:0-subsampled chroma plane, in that
+        // order, for every pixel format this decoder ever hands to
+        // hardware decode - see AVDRMFrameDescriptor's documentation in
+        // libavutil/hwcontext_drm.h ("the order of the planes ... must be
+        // the same as ... the equivalent software format"), and this
+        // decoder's software format is always YUV420P/NV12-family.
+        if (i == 0) {
+            out.width = width;
+            out.height = height;
+        } else {
+            out.width = (width + 1) / 2;
+            out.height = (height + 1) / 2;
+        }
+    }
+
+    // Keeps the mapped frame - and, transitively, the underlying VAAPI
+    // surface (av_hwframe_map() holds its own reference, independent of
+    // vaapiFrame/m_recvFrame) - alive until the sink calls release(),
+    // which per the documented contract (QtScrcpyCore.h) it must do
+    // exactly once, whenever it's actually done with the fds (e.g. right
+    // after eglCreateImageKHR() imports them). A shared_ptr with a custom
+    // deleter is the simplest way to make "free this AVFrame" callable
+    // exactly once from an arbitrary later point, on an arbitrary thread.
+    std::shared_ptr<AVFrame> mappedRef(mapped, [](AVFrame *frame) {
+        av_frame_free(&frame);
+    });
+
+    const bool accepted = m_onHwFrame(width, height, drm, [mappedRef]() mutable {
+        mappedRef.reset();
+    });
+
+    if (accepted) {
+        m_zeroCopyActive.store(true, std::memory_order_relaxed);
+    } else {
+        // The sink's contract requires it to have already called
+        // release() synchronously before returning false (see
+        // QtScrcpyCore.h) - so by this point every copy of mappedRef
+        // (the one captured above, and this local one once it goes out
+        // of scope momentarily) has already dropped to zero references
+        // and the frame is already freed. Nothing left to clean up here;
+        // just stop bothering the sink with further offers this session.
+        m_zeroCopySinkDeclined = true;
+        qInfo("Decoder: zero-copy frame declined by the renderer; "
+              "disabling zero-copy for the rest of this session (falling "
+              "back to the regular hardware copy-back path)");
+    }
+
+    return accepted;
+}
+
+#else // !Q_OS_LINUX
+
+bool Decoder::trySetupZeroCopy(AVFrame *)
+{
+    return false;
+}
+
+bool Decoder::trySubmitZeroCopyFrame(AVFrame *)
+{
+    return false;
+}
+
+#endif
 
 AVFrame *Decoder::transferHwFrame()
 {
@@ -606,18 +836,41 @@ void Decoder::drainDecodedFrames()
         // Hardware-decoded frames arrive as an opaque GPU surface (a
         // VASurfaceID/CVPixelBuffer/ID3D11Texture2D handle wrapped in the
         // AVFrame, format == m_hwPixFmt, data[]/linesize[] not directly
-        // readable) rather than plain mapped memory. transferHwFrame()
-        // reads it back into system memory - and, on drivers that support
-        // it, directly as YUV420P, skipping the sws_scale reshuffle
-        // entirely (see there) - so everything downstream of this point -
-        // the span/stride logic, VideoBuffer, the renderer - stays
-        // completely unaware of whether hw accel is even active.
+        // readable) rather than plain mapped memory. Two ways this gets
+        // to the renderer from here: trySubmitZeroCopyFrame() (used
+        // first when requested - see the design note above it) hands off
+        // the surface directly as GPU-importable DMA-BUF planes, with no
+        // CPU copy at all; transferHwFrame() (the fallback, and the only
+        // path when zero-copy isn't requested/available) reads it back
+        // into system memory - and, on drivers that support it, directly
+        // as YUV420P, skipping the sws_scale reshuffle entirely (see
+        // there). Either way, everything downstream of this point - the
+        // span/stride logic, VideoBuffer, the renderer - stays
+        // completely unaware of whether hw accel, let alone zero-copy,
+        // is even active; a frame handled by zero-copy just doesn't
+        // reach any of that code at all for this iteration (see the
+        // `continue` below).
         const AVFrame *presentFrame = m_recvFrame;
         bool dropFrame = false;
+        bool handledByZeroCopy = false;
         if (m_hwAccelActive.load(std::memory_order_relaxed) &&
             m_recvFrame->format == static_cast<int>(m_hwPixFmt)) {
-            presentFrame = transferHwFrame();
-            dropFrame = (presentFrame == nullptr);
+            if (m_zeroCopyRequested && trySubmitZeroCopyFrame(m_recvFrame)) {
+                handledByZeroCopy = true;
+            } else {
+                presentFrame = transferHwFrame();
+                dropFrame = (presentFrame == nullptr);
+            }
+        }
+
+        if (handledByZeroCopy) {
+            // trySubmitZeroCopyFrame() took its own independent reference
+            // (via av_hwframe_map()) for whatever the sink now holds;
+            // this av_frame_unref() only ever drops m_recvFrame's own
+            // reference, which is unrelated and always correct to drop
+            // here regardless.
+            av_frame_unref(m_recvFrame);
+            continue;
         }
 
         if (dropFrame) {

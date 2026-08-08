@@ -329,6 +329,7 @@ system-installed `adb`, or a config directory outside the app bundle).
 | Variable | Type / range | Default | Effect |
 |---|---|---|---|
 | `QTSCRCPY_DISABLE_HWACCEL` | flag (`1`/`0`) | unset | If explicitly set, overrides the UI's "decoder:" dropdown - `1` forces software decode regardless of what's selected there. Mainly for A/B comparisons and bug reports. |
+| `QTSCRCPY_EXPERIMENTAL_ZEROCOPY` | flag (`1`/`0`) | unset | **Experimental, VAAPI/Linux + EGL only.** `1` renders hardware-decoded frames directly from the decoded GPU surface via DMA-BUF/EGLImage import, skipping the CPU readback the regular hardware path still does. Falls back automatically (and logs why) if the GL context isn't EGL-backed or the required EGL/GL extensions aren't available. See `AUDIT_FIXES.md` → Addendum 7 before enabling. |
 | `QTSCRCPY_DECODER_THREADS` | int, 0-32 | `logical CPUs - 1` (min 1) | FFmpeg software-decode thread count (`AVCodecContext::thread_count`). Irrelevant whenever hardware decode is actually active. |
 | `QTSCRCPY_DECODER_THREAD_TYPE_FRAME` | flag | unset (slice-threading) | `1` switches software decode from `FF_THREAD_SLICE` to `FF_THREAD_FRAME` (more parallelism, one extra frame of latency) - for benchmarking; Android's encoder rarely emits multiple slices per frame, so slice-threading is the default. |
 

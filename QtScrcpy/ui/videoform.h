@@ -6,6 +6,8 @@
 #include <QPointer>
 #include <QThread>
 #include <QWidget>
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <span>
@@ -59,6 +61,9 @@ private:
                      std::span<const uint8_t> dataU,
                      std::span<const uint8_t> dataV,
                      int linesizeY, int linesizeU, int linesizeV) noexcept override;
+    bool submitHwFrame(int width, int height,
+                       const qsc::HwFrameDrmDescriptor &drm,
+                       std::function<void()> release) noexcept override;
 
     void onFrame(int width, int height,
                  std::span<const uint8_t> dataY,
@@ -203,6 +208,59 @@ inline void VideoForm::submitFrame(int width, int height,
     if (previousWidth != width || previousHeight != height) {
         scheduleFrameUiUpdate();
     }
+}
+
+inline bool VideoForm::submitHwFrame(int width, int height,
+                                     const qsc::HwFrameDrmDescriptor &drm,
+                                     std::function<void()> release) noexcept
+{
+    if (width <= 0 || height <= 0) {
+        release();
+        return false;
+    }
+
+    QYuvOpenGLWidget *widget = m_frameSinkWidget.load(std::memory_order_acquire);
+    if (!widget) {
+        release();
+        return false;
+    }
+
+    // Translate the public API's qsc::HwFrameDrmDescriptor into the
+    // renderer's own DmaBufPlane array - the two are intentionally
+    // field-for-field identical (see the comment on DmaBufPlane in
+    // qyuvopenglwidget.h for why they aren't just reused as the same
+    // type).
+    std::array<DmaBufPlane, qsc::HwFrameDrmDescriptor::kMaxPlanes> planes{};
+    const int planeCount = std::min(drm.planeCount, static_cast<int>(planes.size()));
+    for (int i = 0; i < planeCount; ++i) {
+        const qsc::HwFramePlane &in = drm.planes[i];
+        DmaBufPlane &out = planes[static_cast<std::size_t>(i)];
+        out.fd = in.fd;
+        out.fourcc = in.fourcc;
+        out.modifier = in.modifier;
+        out.offset = in.offset;
+        out.pitch = in.pitch;
+        out.width = in.width;
+        out.height = in.height;
+    }
+
+    // submitFrame() above updates m_latestFrameWidth/Height and schedules
+    // a UI update (widget size, FPS counter, showing the video widget the
+    // first time, ...) whenever the reported size changes. A zero-copy
+    // frame's actual imported size isn't confirmed until later, on the GL
+    // thread (QYuvOpenGLWidget::importPendingHwFrameLocked()) - but the
+    // *decoder*-reported size is already known here, same as submitFrame()
+    // gets it, so trigger the same latched-size-change bookkeeping here
+    // too rather than only on the next regular submitFrame() call, which
+    // might not come for a long while (or ever, once zero-copy is
+    // reliably handling every frame).
+    const int previousWidth = m_latestFrameWidth.exchange(width, std::memory_order_acq_rel);
+    const int previousHeight = m_latestFrameHeight.exchange(height, std::memory_order_acq_rel);
+    if (previousWidth != width || previousHeight != height) {
+        scheduleFrameUiUpdate();
+    }
+
+    return widget->submitHwFrame(width, height, planes.data(), planeCount, std::move(release));
 }
 
 inline void VideoForm::scheduleFrameUiUpdate() noexcept

@@ -3,6 +3,36 @@
 
 namespace qsc {
 
+// ---------------------------------------------------------------------
+// Zero-copy hardware-decoded frame handoff (experimental, VAAPI/Linux
+// only for now - see FrameSink::submitHwFrame() in QtScrcpyCore.h and
+// the QTSCRCPY_EXPERIMENTAL_ZEROCOPY environment variable).
+// ---------------------------------------------------------------------
+// Describes one importable plane of a hardware-decoded frame as a Linux
+// DMA-BUF: everything EGL's EGL_EXT_image_dma_buf_import (+ _modifiers)
+// extension needs to import it directly as a GL texture with zero CPU
+// copies. Deliberately mirrors FFmpeg's own AVDRMPlaneDescriptor /
+// AVDRMObjectDescriptor fields (see libavutil/hwcontext_drm.h) rather
+// than reusing those types directly, so this public header never needs
+// to include FFmpeg headers or expose FFmpeg types across the library
+// boundary - the same reason submitFrame() below uses std::span instead
+// of a raw AVFrame.
+struct HwFramePlane {
+    int fd = -1;          // DRM PRIME (dma-buf) file descriptor - NOT owned by the receiver; valid only for the duration of the submitHwFrame() call, and (if imported into something, e.g. a GL texture, that outlives the call) only until the matching release() callback is invoked
+    quint32 fourcc = 0;   // DRM_FORMAT_* code for this plane (e.g. DRM_FORMAT_R8, DRM_FORMAT_GR88)
+    quint64 modifier = 0; // DRM format modifier (tiling layout); ~0ULL (DRM_FORMAT_MOD_INVALID) if unknown - treat as "assume linear, best effort" in that case
+    qint64 offset = 0;    // Byte offset of this plane's data within fd
+    qint64 pitch = 0;     // Row stride in bytes
+    int width = 0;
+    int height = 0;
+};
+
+struct HwFrameDrmDescriptor {
+    static constexpr int kMaxPlanes = 4;
+    int planeCount = 0;
+    HwFramePlane planes[kMaxPlanes];
+};
+
 struct DeviceParams {
     // necessary
     QString serial = "";              // 设备序列号

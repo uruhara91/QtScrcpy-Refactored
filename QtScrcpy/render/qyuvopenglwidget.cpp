@@ -17,6 +17,49 @@
 #define QSC_HAS_GL_NATIVE_INTERFACE 1
 #endif
 
+#if defined(Q_OS_LINUX) && defined(QSC_HAS_GL_NATIVE_INTERFACE)
+#define QSC_HAS_ZEROCOPY_SUPPORT 1
+// ---------------------------------------------------------------------
+// EGL/DRM constants for the zero-copy dma-buf import path
+// ---------------------------------------------------------------------
+// Values copied from the system's own <EGL/egl.h>/<EGL/eglext.h>/
+// <drm/drm_fourcc.h> (verified against them directly, not guessed)
+// rather than including those headers here. EGL/eglext.h transitively
+// pulls in X11 headers on Linux, which are notorious for #define-ing
+// short, common identifiers (Bool, True, False, Status, ...) that
+// collide with unrelated code - this file is included, via
+// qyuvopenglwidget.h, from videoform.h and therefore most of the rest of
+// the UI layer, so that risk isn't worth taking for a handful of
+// integer constants and function-pointer types this file already
+// declares its own EGL-agnostic equivalents of (see the header).
+namespace egl_zerocopy {
+constexpr std::int32_t kWidth = 0x3057;                        // EGL_WIDTH
+constexpr std::int32_t kHeight = 0x3056;                       // EGL_HEIGHT
+constexpr std::int32_t kNone = 0x3038;                         // EGL_NONE
+constexpr std::int32_t kExtensions = 0x3055;                   // EGL_EXTENSIONS
+constexpr std::int32_t kLinuxDmaBufExt = 0x3270;               // EGL_LINUX_DMA_BUF_EXT (eglCreateImageKHR target)
+constexpr std::int32_t kLinuxDrmFourccExt = 0x3271;            // EGL_LINUX_DRM_FOURCC_EXT
+constexpr std::int32_t kDmaBufPlane0FdExt = 0x3272;            // EGL_DMA_BUF_PLANE0_FD_EXT
+constexpr std::int32_t kDmaBufPlane0OffsetExt = 0x3273;        // EGL_DMA_BUF_PLANE0_OFFSET_EXT
+constexpr std::int32_t kDmaBufPlane0PitchExt = 0x3274;         // EGL_DMA_BUF_PLANE0_PITCH_EXT
+constexpr std::int32_t kDmaBufPlane0ModifierLoExt = 0x3443;    // EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT
+constexpr std::int32_t kDmaBufPlane0ModifierHiExt = 0x3444;    // EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT
+constexpr quint64 kDrmFormatModInvalid = 0x00FFFFFFFFFFFFFFULL; // DRM_FORMAT_MOD_INVALID
+} // namespace egl_zerocopy
+
+// Core EGL 1.0/1.1 entry points, guaranteed to be real exported symbols
+// in any libEGL.so (unlike KHR/EXT extension functions, which must be
+// resolved dynamically through eglGetProcAddress instead - see
+// tryInitZeroCopy()). Hand-declared with matching C linkage/signatures
+// rather than including <EGL/egl.h> for the same X11-pollution reason as
+// the constants above; QtScrcpyCore/CMakeLists.txt links -lEGL on Linux
+// to satisfy these.
+extern "C" {
+void *eglGetProcAddress(const char *procname);
+const char *eglQueryString(void *dpy, std::int32_t name);
+}
+#endif
+
 // ---------------------------------------------------------------------
 // Shaders
 // ---------------------------------------------------------------------
@@ -96,6 +139,68 @@ void main(void) {
 }
 )";
 
+#ifdef QSC_HAS_ZEROCOPY_SUPPORT
+// NV12 variants for the experimental zero-copy path (see
+// tryInitZeroCopy()): two textures instead of three - luma (R8) and a
+// single interleaved-chroma texture (RG8) imported directly from the
+// decoded hardware surface's own memory layout via
+// glEGLImageTargetTexture2DOES(), rather than three CPU-written planes.
+// Reuses the exact same proven YUV -> RGB colour matrix as the shaders
+// above; the only actual difference is sourcing U/V from one 2-channel
+// texture's .r/.g instead of two separate 1-channel textures. NV12
+// stores chroma as U-then-V per sample (as opposed to NV21's V-then-U),
+// and DRM's GR88 fourcc (what FFmpeg's VAAPI->DRM_PRIME export reports
+// for NV12's chroma plane) preserves that same memory byte order when
+// imported as a plain (non-swizzled) GL_RG8 texture - so .r should be U
+// and .g should be V here, matching tex_u/tex_v above exactly. Flagged
+// here specifically because it's one of the only things in this whole
+// path that's genuinely a guess rather than something verified against
+// a spec or a real header: if colours come out visibly wrong (a
+// green/magenta tint shift is the classic symptom of U/V being swapped)
+// on real hardware, swapping .r/.g on the line below is the fix.
+static const char *fragShaderNV12_450 = R"(#version 450 core
+in vec2 textureOut;
+out vec4 FragColor;
+layout(binding = 0) uniform sampler2D tex_y;
+layout(binding = 1) uniform sampler2D tex_uv;
+
+const mat3 yuv2rgb = mat3(
+    1.164,  1.164,  1.164,
+    0.0,   -0.213,  2.112,
+    1.793, -0.533,  0.0
+);
+
+const vec3 rgbOffset = vec3(0.9729, -0.30148, 1.1334);
+void main(void) {
+    vec3 yuv;
+    yuv.x = texture(tex_y, textureOut).r;
+    yuv.yz = texture(tex_uv, textureOut).rg; // .r = U/Cb, .g = V/Cr - see note above
+    FragColor = vec4(yuv2rgb * yuv - rgbOffset, 1.0);
+}
+)";
+
+static const char *fragShaderNV12_410 = R"(#version 410 core
+in vec2 textureOut;
+out vec4 FragColor;
+uniform sampler2D tex_y;
+uniform sampler2D tex_uv;
+
+const mat3 yuv2rgb = mat3(
+    1.164,  1.164,  1.164,
+    0.0,   -0.213,  2.112,
+    1.793, -0.533,  0.0
+);
+
+const vec3 rgbOffset = vec3(0.9729, -0.30148, 1.1334);
+void main(void) {
+    vec3 yuv;
+    yuv.x = texture(tex_y, textureOut).r;
+    yuv.yz = texture(tex_uv, textureOut).rg; // .r = U/Cb, .g = V/Cr - see note above
+    FragColor = vec4(yuv2rgb * yuv - rgbOffset, 1.0);
+}
+)";
+#endif
+
 QYuvOpenGLWidget::QYuvOpenGLWidget(QWidget *parent)
     : QOpenGLWidget(parent)
 {
@@ -159,10 +264,43 @@ QYuvOpenGLWidget::~QYuvOpenGLWidget()
 {
     m_acceptFrames.store(false, std::memory_order_release);
 
+#ifdef QSC_HAS_ZEROCOPY_SUPPORT
+    // Release order doesn't matter between these two (independent
+    // frames/references) - just make sure both get released exactly
+    // once rather than leaked, regardless of whether zero-copy ever
+    // actually produced a frame this session.
+    {
+        std::function<void()> pendingRelease;
+        {
+            std::lock_guard<std::mutex> lock(m_hwFrameMutex);
+            if (m_pendingHwFrame.has_value()) {
+                pendingRelease = std::move(m_pendingHwFrame->release);
+                m_pendingHwFrame.reset();
+            }
+        }
+        if (pendingRelease) pendingRelease();
+    }
+    if (m_activeHwFrameRelease) {
+        m_activeHwFrameRelease();
+        m_activeHwFrameRelease = nullptr;
+    }
+#endif
+
     if (isValid()) {
         makeCurrent();
         deInitTextures();
         deInitPBOs();
+
+#ifdef QSC_HAS_ZEROCOPY_SUPPORT
+        if (m_zeroCopyTextures[0] != 0 || m_zeroCopyTextures[1] != 0) {
+            if (m_useDsaPath.load(std::memory_order_relaxed)) {
+                glDeleteTextures(2, m_zeroCopyTextures.data());
+            } else {
+                m_gl41.glDeleteTextures(2, m_zeroCopyTextures.data());
+            }
+            m_zeroCopyTextures = {0, 0};
+        }
+#endif
 
         // m_vao/m_vbo were created through whichever function resolver
         // actually initialized successfully (see initializeGL()) - they
@@ -423,6 +561,327 @@ void QYuvOpenGLWidget::logGlPlatformBackend()
 #endif
 }
 
+#ifdef QSC_HAS_ZEROCOPY_SUPPORT
+
+bool QYuvOpenGLWidget::tryInitZeroCopy()
+{
+    // Called once, from initializeGL() (always the GL thread, with the
+    // context current) rather than lazily from the first submitHwFrame()
+    // call - that can arrive on the decoder thread before this widget has
+    // painted even once, and everything this function checks (extension
+    // strings, function resolution) needs GL/EGL calls that are only
+    // valid with a current context.
+    if (!qsc::telemetry::environmentFlag("QTSCRCPY_EXPERIMENTAL_ZEROCOPY", false)) {
+        m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+        return false;
+    }
+
+    QOpenGLContext *ctx = context();
+    auto *eglInterface = ctx ? ctx->nativeInterface<QNativeInterface::QEGLContext>() : nullptr;
+    if (!eglInterface) {
+        qInfo() << "QYuvOpenGLWidget: zero-copy requested but the GL context "
+                   "isn't EGL-backed (see the GL platform backend log above); "
+                   "staying on the regular hardware copy-back path";
+        m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+        return false;
+    }
+    m_eglDisplay = eglInterface->display();
+    if (!m_eglDisplay) {
+        qWarning() << "QYuvOpenGLWidget: zero-copy unavailable - EGLDisplay is null";
+        m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+        return false;
+    }
+
+    const char *eglExtensions = eglQueryString(m_eglDisplay, egl_zerocopy::kExtensions);
+    const bool haveDmaBufImport = eglExtensions &&
+        QByteArray(eglExtensions).contains("EGL_EXT_image_dma_buf_import");
+    if (!haveDmaBufImport) {
+        qInfo() << "QYuvOpenGLWidget: zero-copy unavailable - EGL_EXT_image_dma_buf_import "
+                   "not in this EGL display's extension string; staying on the "
+                   "regular hardware copy-back path";
+        m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+        return false;
+    }
+    const bool haveModifiers = eglExtensions &&
+        QByteArray(eglExtensions).contains("EGL_EXT_image_dma_buf_import_modifiers");
+    if (!haveModifiers) {
+        // Not a hard blocker - importPendingHwFrameLocked() only sends
+        // modifier attributes when this is true, and simply omits them
+        // otherwise (implying linear layout). Worth knowing about though:
+        // a tiled (non-linear) surface without modifier support importing
+        // "successfully" but rendering garbage is exactly the kind of
+        // thing this log line exists to help diagnose after the fact.
+        qInfo() << "QYuvOpenGLWidget: EGL_EXT_image_dma_buf_import_modifiers "
+                   "not available - proceeding without explicit tiling/modifier "
+                   "info; if the image imports but renders as garbage/noise, "
+                   "this is the most likely reason";
+    }
+
+    const char *glExtensions = reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
+    // On core profiles glGetString(GL_EXTENSIONS) is technically
+    // deprecated in favour of glGetStringi()-per-index, but every driver
+    // that matters here (Mesa) still answers it correctly on a core
+    // context in practice, and this is a one-time startup check, not a
+    // hot path - not worth the extra complexity of the indexed query.
+    const bool haveEglImageExt = glExtensions &&
+        QByteArray(glExtensions).contains("GL_OES_EGL_image");
+    if (!haveEglImageExt) {
+        qInfo() << "QYuvOpenGLWidget: zero-copy unavailable - GL_OES_EGL_image "
+                   "not in this GL context's extension string; staying on the "
+                   "regular hardware copy-back path";
+        m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+        return false;
+    }
+
+    m_eglCreateImageKHR = reinterpret_cast<PFN_eglCreateImageKHR>(
+        eglGetProcAddress("eglCreateImageKHR"));
+    m_eglDestroyImageKHR = reinterpret_cast<PFN_eglDestroyImageKHR>(
+        eglGetProcAddress("eglDestroyImageKHR"));
+    m_glEGLImageTargetTexture2DOES = reinterpret_cast<PFN_glEGLImageTargetTexture2DOES>(
+        reinterpret_cast<void *>(ctx->getProcAddress("glEGLImageTargetTexture2DOES")));
+    if (!m_eglCreateImageKHR || !m_eglDestroyImageKHR || !m_glEGLImageTargetTexture2DOES) {
+        qWarning() << "QYuvOpenGLWidget: zero-copy unavailable - failed to resolve "
+                      "one or more required EGL/GL extension functions "
+                      "(eglCreateImageKHR:" << (m_eglCreateImageKHR != nullptr)
+                   << "eglDestroyImageKHR:" << (m_eglDestroyImageKHR != nullptr)
+                   << "glEGLImageTargetTexture2DOES:" << (m_glEGLImageTargetTexture2DOES != nullptr)
+                   << "); staying on the regular hardware copy-back path";
+        m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+        return false;
+    }
+
+    initZeroCopyShader();
+    if (!m_zeroCopyProgram.isLinked()) {
+        m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+        return false;
+    }
+
+    const bool dsa = m_useDsaPath.load(std::memory_order_relaxed);
+    if (dsa) {
+        glCreateTextures(GL_TEXTURE_2D, 2, m_zeroCopyTextures.data());
+    } else {
+        m_gl41.glGenTextures(2, m_zeroCopyTextures.data());
+    }
+    for (GLuint tex : m_zeroCopyTextures) {
+        if (tex == 0) {
+            qWarning() << "QYuvOpenGLWidget: zero-copy unavailable - texture "
+                          "allocation failed";
+            m_zeroCopyState.store(ZeroCopyState::Unavailable, std::memory_order_release);
+            return false;
+        }
+        if (dsa) {
+            glTextureParameteri(tex, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTextureParameteri(tex, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTextureParameteri(tex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTextureParameteri(tex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        } else {
+            m_gl41.glBindTexture(GL_TEXTURE_2D, tex);
+            m_gl41.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            m_gl41.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            m_gl41.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            m_gl41.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+    }
+    if (!dsa) m_gl41.glBindTexture(GL_TEXTURE_2D, 0);
+
+    m_zeroCopyState.store(ZeroCopyState::Available, std::memory_order_release);
+    qInfo() << "QYuvOpenGLWidget: zero-copy hardware frame import is available "
+               "(EGL_EXT_image_dma_buf_import + GL_OES_EGL_image confirmed) and "
+               "will be used for hardware-decoded frames";
+    return true;
+}
+
+void QYuvOpenGLWidget::initZeroCopyShader()
+{
+    const bool dsa = m_useDsaPath.load(std::memory_order_relaxed);
+    const char *vertSource = dsa ? vertShader450 : vertShader410;
+    const char *fragSource = dsa ? fragShaderNV12_450 : fragShaderNV12_410;
+
+    if (!m_zeroCopyProgram.addShaderFromSourceCode(QOpenGLShader::Vertex, vertSource) ||
+        !m_zeroCopyProgram.addShaderFromSourceCode(QOpenGLShader::Fragment, fragSource) ||
+        !m_zeroCopyProgram.link()) {
+        qCritical() << "Failed to initialize zero-copy NV12 shader:"
+                    << m_zeroCopyProgram.log();
+        return;
+    }
+
+    m_zeroCopyProgram.bind();
+    m_zeroCopyProgram.setUniformValue("tex_y", 0);
+    m_zeroCopyProgram.setUniformValue("tex_uv", 1);
+    m_zeroCopyProgram.release();
+}
+
+bool QYuvOpenGLWidget::submitHwFrame(int width, int height,
+                                     const DmaBufPlane *planes, int planeCount,
+                                     std::function<void()> release)
+{
+    if (!m_acceptFrames.load(std::memory_order_acquire) ||
+        m_zeroCopyState.load(std::memory_order_acquire) != ZeroCopyState::Available ||
+        width <= 0 || height <= 0 || !planes || planeCount <= 0 || planeCount > 2) {
+        release();
+        return false;
+    }
+
+    PendingHwFrame pending;
+    pending.width = width;
+    pending.height = height;
+    pending.planeCount = planeCount;
+    for (int i = 0; i < planeCount; ++i) pending.planes[static_cast<std::size_t>(i)] = planes[i];
+    pending.release = std::move(release);
+
+    std::function<void()> supersededRelease;
+    {
+        std::lock_guard<std::mutex> lock(m_hwFrameMutex);
+        if (m_pendingHwFrame.has_value()) {
+            // A previous frame arrived and paintGL() hasn't run since to
+            // import it - release it now rather than leaking it / holding
+            // the decoder's surface pool hostage for a frame that's about
+            // to be superseded and was never going to be shown anyway.
+            supersededRelease = std::move(m_pendingHwFrame->release);
+        }
+        m_pendingHwFrame.emplace(std::move(pending));
+    }
+    if (supersededRelease) supersededRelease();
+
+    scheduleUpdate();
+    return true;
+}
+
+void QYuvOpenGLWidget::importPendingHwFrameLocked()
+{
+    std::optional<PendingHwFrame> pending;
+    {
+        std::lock_guard<std::mutex> lock(m_hwFrameMutex);
+        if (!m_pendingHwFrame.has_value()) return;
+        pending = std::move(m_pendingHwFrame);
+        m_pendingHwFrame.reset();
+    }
+
+    const bool dsa = m_useDsaPath.load(std::memory_order_relaxed);
+    bool importOk = true;
+
+    for (int i = 0; i < pending->planeCount && i < 2; ++i) {
+        const DmaBufPlane &plane = pending->planes[static_cast<std::size_t>(i)];
+
+        std::int32_t attribs[19];
+        int n = 0;
+        attribs[n++] = egl_zerocopy::kWidth;
+        attribs[n++] = plane.width;
+        attribs[n++] = egl_zerocopy::kHeight;
+        attribs[n++] = plane.height;
+        attribs[n++] = egl_zerocopy::kLinuxDrmFourccExt;
+        attribs[n++] = static_cast<std::int32_t>(plane.fourcc);
+        attribs[n++] = egl_zerocopy::kDmaBufPlane0FdExt;
+        attribs[n++] = plane.fd;
+        attribs[n++] = egl_zerocopy::kDmaBufPlane0OffsetExt;
+        attribs[n++] = static_cast<std::int32_t>(plane.offset);
+        attribs[n++] = egl_zerocopy::kDmaBufPlane0PitchExt;
+        attribs[n++] = static_cast<std::int32_t>(plane.pitch);
+        if (plane.modifier != 0 && plane.modifier != egl_zerocopy::kDrmFormatModInvalid) {
+            attribs[n++] = egl_zerocopy::kDmaBufPlane0ModifierLoExt;
+            attribs[n++] = static_cast<std::int32_t>(plane.modifier & 0xFFFFFFFFu);
+            attribs[n++] = egl_zerocopy::kDmaBufPlane0ModifierHiExt;
+            attribs[n++] = static_cast<std::int32_t>(plane.modifier >> 32);
+        }
+        attribs[n++] = egl_zerocopy::kNone;
+        Q_ASSERT(n <= static_cast<int>(std::size(attribs)));
+
+        void *image = m_eglCreateImageKHR(m_eglDisplay, nullptr /*EGL_NO_CONTEXT*/,
+                                          static_cast<unsigned int>(egl_zerocopy::kLinuxDmaBufExt),
+                                          nullptr, attribs);
+        if (!image) {
+            qWarning() << "QYuvOpenGLWidget: eglCreateImageKHR failed for plane" << i
+                      << "(fourcc=" << Qt::hex << plane.fourcc << Qt::dec
+                      << "modifier=" << plane.modifier << ") - dropping this frame";
+            importOk = false;
+            break;
+        }
+
+        if (dsa) {
+            glBindTextureUnit(static_cast<GLuint>(i), m_zeroCopyTextures[static_cast<std::size_t>(i)]);
+            glBindTexture(GL_TEXTURE_2D, m_zeroCopyTextures[static_cast<std::size_t>(i)]);
+        } else {
+            m_gl41.glActiveTexture(static_cast<GLenum>(GL_TEXTURE0 + i));
+            m_gl41.glBindTexture(GL_TEXTURE_2D, m_zeroCopyTextures[static_cast<std::size_t>(i)]);
+        }
+        m_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
+
+        // Per the EGL_KHR_image_base spec, once glEGLImageTargetTexture2DOES()
+        // has consumed it, the texture retains the image data and the
+        // EGLImage handle itself is no longer needed - safe to destroy
+        // immediately. What must still stay valid for as long as the
+        // texture is actually used is the underlying dma-buf/hardware
+        // surface itself, which is exactly what pending->release (kept in
+        // m_activeHwFrameRelease below, called only once this frame is
+        // itself superseded) is responsible for.
+        m_eglDestroyImageKHR(m_eglDisplay, image);
+    }
+    if (!dsa) m_gl41.glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (!importOk) {
+        pending->release();
+        return;
+    }
+
+    // This frame is now the one backing m_zeroCopyTextures - release
+    // whatever the *previous* one was (safe to reclaim its hardware
+    // surface now that nothing references it for drawing anymore), and
+    // hang on to this one's release callback until it's superseded in
+    // turn (or the widget is torn down - see the destructor).
+    if (m_activeHwFrameRelease) m_activeHwFrameRelease();
+    m_activeHwFrameRelease = std::move(pending->release);
+    m_zeroCopyFrameWidth = pending->width;
+    m_zeroCopyFrameHeight = pending->height;
+    m_zeroCopyFrameReady = true;
+    setFrameSize(QSize(pending->width, pending->height));
+}
+
+void QYuvOpenGLWidget::drawZeroCopyFrame(bool dsa)
+{
+    if (!m_zeroCopyProgram.isLinked()) return;
+
+    m_zeroCopyProgram.bind();
+    if (dsa) {
+        glBindVertexArray(m_vao);
+        glBindTextureUnit(0, m_zeroCopyTextures[0]);
+        glBindTextureUnit(1, m_zeroCopyTextures[1]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindVertexArray(0);
+    } else {
+        m_gl41.glBindVertexArray(m_vao);
+        m_gl41.glActiveTexture(GL_TEXTURE0);
+        m_gl41.glBindTexture(GL_TEXTURE_2D, m_zeroCopyTextures[0]);
+        m_gl41.glActiveTexture(GL_TEXTURE1);
+        m_gl41.glBindTexture(GL_TEXTURE_2D, m_zeroCopyTextures[1]);
+        m_gl41.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        m_gl41.glBindVertexArray(0);
+    }
+    m_zeroCopyProgram.release();
+
+    if (m_telemetryEnabled) {
+        m_renderedFrames.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+#endif // QSC_HAS_ZEROCOPY_SUPPORT
+
+#ifndef QSC_HAS_ZEROCOPY_SUPPORT
+bool QYuvOpenGLWidget::submitHwFrame(int, int, const DmaBufPlane *, int,
+                                     std::function<void()> release)
+{
+    // Zero-copy needs Qt's EGL native interface (QNativeInterface::QEGLContext,
+    // see qopenglcontext_platform.h) which isn't available in this build
+    // configuration - most commonly because this isn't Linux at all
+    // (Windows/macOS don't need or use this path; their hardware decode
+    // already works via the copy-back path in Decoder::transferHwFrame()).
+    // Always declining is the correct, safe behavior here: the caller
+    // (Decoder::trySubmitZeroCopyFrame()) falls back to the regular
+    // hardware copy-back path for every frame in that case.
+    release();
+    return false;
+}
+#endif
+
 void QYuvOpenGLWidget::initializeGL()
 {
     const bool dsaAvailable = initializeOpenGLFunctions();
@@ -516,6 +975,10 @@ void QYuvOpenGLWidget::initializeGL()
 
         m_gl41.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     }
+
+#ifdef QSC_HAS_ZEROCOPY_SUPPORT
+    tryInitZeroCopy();
+#endif
 }
 
 void QYuvOpenGLWidget::initShader()
@@ -789,6 +1252,16 @@ void QYuvOpenGLWidget::paintGL()
     if (!m_isInitialized) return;
 
     const bool dsa = m_useDsaPath.load(std::memory_order_relaxed);
+
+#ifdef QSC_HAS_ZEROCOPY_SUPPORT
+    if (m_zeroCopyState.load(std::memory_order_acquire) == ZeroCopyState::Available) {
+        importPendingHwFrameLocked();
+        if (m_zeroCopyFrameReady) {
+            drawZeroCopyFrame(dsa);
+            return;
+        }
+    }
+#endif
 
     if (!m_pboSizeValid.load(std::memory_order_acquire)) {
         if (dsa) glClear(GL_COLOR_BUFFER_BIT);

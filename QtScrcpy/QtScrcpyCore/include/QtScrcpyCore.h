@@ -2,6 +2,7 @@
 #include <QMouseEvent>
 #include <QPointF>
 #include <QPointer>
+#include <functional>
 #include <span>
 
 #include "QtScrcpyCoreDef.h"
@@ -22,6 +23,38 @@ public:
                              std::span<const uint8_t> dataU,
                              std::span<const uint8_t> dataV,
                              int linesizeY, int linesizeU, int linesizeV) noexcept = 0;
+
+    // Optional zero-copy path (experimental - see
+    // QTSCRCPY_EXPERIMENTAL_ZEROCOPY): offered *instead of* submitFrame()
+    // when the decoder has a hardware-decoded frame available as
+    // directly GPU-importable DMA-BUF planes, letting a sink that can use
+    // this (e.g. a GL renderer with EGL_EXT_image_dma_buf_import) skip
+    // the CPU readback + colour-plane reshuffle submitFrame() otherwise
+    // needs. Purely additive: the default implementation below declines
+    // ("can't use this"), which tells the caller to fall back to the
+    // normal submitFrame() path for this frame - always a safe, correct
+    // response, so every existing FrameSink keeps working unmodified
+    // without overriding this at all.
+    //
+    // `release` MUST be invoked exactly once - synchronously before
+    // returning if declining (returning false; the default
+    // implementation below does exactly this), or later, from any
+    // thread, once every fd in `drm` is no longer needed (e.g. right
+    // after eglCreateImageKHR() has imported it into a texture - the fd
+    // itself does not need to stay open past that call returning, but
+    // the decoder holds the underlying hardware decode surface reserved,
+    // unable to reuse it for a new frame, until release() fires, so
+    // calling it later than necessary needlessly starves the decoder's
+    // surface pool). The fds in `drm` are only valid for the extent of
+    // this call and, if still needed past that, only until `release` is
+    // invoked - never close() them yourself, and never touch them after
+    // calling `release`.
+    virtual bool submitHwFrame(int /*width*/, int /*height*/,
+                               const HwFrameDrmDescriptor & /*drm*/,
+                               std::function<void()> release) noexcept {
+        release();
+        return false;
+    }
 };
 
 class DeviceObserver {

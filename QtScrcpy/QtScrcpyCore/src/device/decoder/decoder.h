@@ -47,6 +47,34 @@ struct SwsContextDeleter {
     void operator()(SwsContext *ctx) const;
 };
 
+// ---------------------------------------------------------------------
+// Experimental zero-copy hardware-frame handoff (VAAPI/Linux only for
+// now - see QTSCRCPY_EXPERIMENTAL_ZEROCOPY and trySetupZeroCopy() in
+// decoder.cpp for the full design note).
+// ---------------------------------------------------------------------
+// Field-for-field mirror of qsc::HwFramePlane / qsc::HwFrameDrmDescriptor
+// (QtScrcpyCoreDef.h, the public API). Deliberately a separate,
+// independent type rather than including that header here: Decoder has
+// zero dependency on the public API layer today (FrameCallback below
+// uses plain std::span/int, not qsc:: types either), and device.cpp is
+// already the adapter that translates between the two worlds - this
+// keeps that the same for the hw-frame path.
+struct DrmFramePlane {
+    int fd = -1;
+    uint32_t fourcc = 0;
+    uint64_t modifier = 0;
+    int64_t offset = 0;
+    int64_t pitch = 0;
+    int width = 0;
+    int height = 0;
+};
+
+struct DrmFrameDescriptor {
+    static constexpr int kMaxPlanes = 4;
+    int planeCount = 0;
+    DrmFramePlane planes[kMaxPlanes];
+};
+
 class VideoBuffer;
 
 class Decoder : public QThread
@@ -59,6 +87,16 @@ public:
                                             std::span<const uint8_t> dataV,
                                             int linesizeY, int linesizeU, int linesizeV)>;
 
+    // Mirrors qsc::FrameSink::submitHwFrame()'s signature exactly (see
+    // the DrmFrameDescriptor comment above for why this isn't just that
+    // type reused directly). Returns true if the frame was accepted
+    // (ownership of the underlying hw surface transferred until
+    // `release` is called), false to fall back to the regular
+    // FrameCallback path for that frame.
+    using HwFrameCallback = std::function<bool(int width, int height,
+                                               const DrmFrameDescriptor &drm,
+                                               std::function<void()> release)>;
+
     // useHwDecode: the user's saved preference (Dialog's "decoder:"
     // dropdown, DeviceParams::useHwDecode) for whether to attempt hardware
     // decode at all. true still means "try hardware, fall back to
@@ -67,7 +105,14 @@ public:
     // straight to software. QTSCRCPY_DISABLE_HWACCEL, if explicitly set,
     // overrides this (see tryInitHwAccel()) the same way
     // QTSCRCPY_SERVER_ROOT overrides DeviceParams::useRoot in server.cpp.
-    explicit Decoder(FrameCallback onFrame, bool useHwDecode = true, QObject *parent = nullptr);
+    //
+    // onHwFrame: optional (default null = "not offered"). If provided,
+    // and QTSCRCPY_EXPERIMENTAL_ZEROCOPY=1 is set, hardware-decoded
+    // frames are offered to it first (see trySubmitZeroCopyFrame() in
+    // decoder.cpp); onFrame is only used as the fallback for frames it
+    // declines, or always, if this is null or the env var isn't set.
+    explicit Decoder(FrameCallback onFrame, bool useHwDecode = true,
+                     HwFrameCallback onHwFrame = nullptr, QObject *parent = nullptr);
     ~Decoder() override;
 
     [[nodiscard]] bool open();
@@ -89,6 +134,12 @@ public:
     // session. Always false on the software-decode fallback path.
     bool hwAccelActive() const {
         return m_hwAccelActive.load(std::memory_order_relaxed);
+    }
+    // True once at least one frame has actually been handed off via the
+    // zero-copy path this session (as opposed to merely being requested/
+    // available - see trySubmitZeroCopyFrame() in decoder.cpp).
+    bool zeroCopyActive() const {
+        return m_zeroCopyActive.load(std::memory_order_relaxed);
     }
 
 signals:
@@ -188,11 +239,45 @@ private:
     AVFrame *transferHwFrame();
     static AVPixelFormat getHwFormat(AVCodecContext *ctx, const AVPixelFormat *pixFmts);
 
+    // --- Experimental zero-copy hardware-frame handoff (VAAPI/Linux
+    // only; see the design note at the top of the corresponding
+    // decoder.cpp section). Both are best-effort/opportunistic in
+    // exactly the same spirit as hardware decode itself: any failure
+    // anywhere just falls back to the existing, proven copy-back path
+    // (transferHwFrame() above) for that frame, never a hard error.
+    //
+    // Lazily derives a DRM-PRIME-compatible hardware frames context from
+    // the active VAAPI one. Only ever attempted once per session
+    // (successful or not - see m_zeroCopySetupDone); some of what it
+    // needs isn't available until at least one real hardware frame has
+    // been decoded, so it can't run any earlier than that.
+    bool trySetupZeroCopy(AVFrame *vaapiFrame);
+    // Maps vaapiFrame to a DRM_PRIME view (no data copy) and offers it to
+    // m_onHwFrame. Returns true if the sink accepted it (frame handoff
+    // complete: the sink now owns a reference, kept alive until it calls
+    // the release callback it was given), false if the caller should
+    // fall back to transferHwFrame() for this frame instead.
+    bool trySubmitZeroCopyFrame(AVFrame *vaapiFrame);
+
 private:
     std::unique_ptr<VideoBuffer> m_vb;
     std::unique_ptr<AVCodecContext, AVCodecContextDeleter> m_codecCtx;
     AVFrame *m_recvFrame = nullptr;
     FrameCallback m_onFrame;
+    HwFrameCallback m_onHwFrame;
+
+    // Experimental zero-copy state (VAAPI/Linux only). All unused/false
+    // when QTSCRCPY_EXPERIMENTAL_ZEROCOPY isn't set, no onHwFrame
+    // callback was provided, or setup/every attempt failed - the decoder
+    // then behaves exactly as it did before this feature existed (falls
+    // back to transferHwFrame() below for every frame).
+    bool m_zeroCopyRequested = false;     // QTSCRCPY_EXPERIMENTAL_ZEROCOPY=1 at construction time, and onHwFrame != nullptr
+    bool m_zeroCopySetupDone = false;     // trySetupZeroCopy() has run (successfully or not) this session
+    bool m_zeroCopyAvailable = false;     // ... and it succeeded
+    bool m_zeroCopySinkDeclined = false;  // the sink returned false once already; stop offering it frames this session
+    std::atomic_bool m_zeroCopyActive{false}; // at least one frame was actually handed off this session (see zeroCopyActive())
+    std::unique_ptr<AVBufferRef, AVBufferRefDeleter> m_drmDeviceCtx;
+    std::unique_ptr<AVBufferRef, AVBufferRefDeleter> m_drmFramesCtx;
 
     // Hardware-decode state. All unused/empty when hw accel is unavailable
     // or disabled (QTSCRCPY_DISABLE_HWACCEL=1) - the decoder then behaves

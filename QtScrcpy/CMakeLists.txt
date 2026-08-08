@@ -562,6 +562,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
     target_link_libraries(${PROJECT_NAME} PRIVATE
         xcb
+        # eglGetProcAddress/eglQueryString, hand-declared (not included
+        # from <EGL/egl.h>) in qyuvopenglwidget.cpp's experimental
+        # zero-copy path - see QSC_HAS_ZEROCOPY_SUPPORT there for why.
+        # Both are core EGL 1.0/1.1 entry points, always a real exported
+        # symbol in any libEGL.so.
+        EGL
         Threads::Threads
     )
 

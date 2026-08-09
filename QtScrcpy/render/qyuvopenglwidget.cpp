@@ -617,14 +617,38 @@ bool QYuvOpenGLWidget::tryInitZeroCopy()
                    "this is the most likely reason";
     }
 
-    const char *glExtensions = reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
-    // On core profiles glGetString(GL_EXTENSIONS) is technically
-    // deprecated in favour of glGetStringi()-per-index, but every driver
-    // that matters here (Mesa) still answers it correctly on a core
-    // context in practice, and this is a one-time startup check, not a
-    // hot path - not worth the extra complexity of the indexed query.
-    const bool haveEglImageExt = glExtensions &&
-        QByteArray(glExtensions).contains("GL_OES_EGL_image");
+    const bool dsa = m_useDsaPath.load(std::memory_order_relaxed);
+
+    // glGetString(GL_EXTENSIONS) is deprecated on core profiles (which is
+    // what this widget always requests - see main.cpp) and, at least on
+    // this Intel/Mesa (iris) driver on a core context, doesn't reliably
+    // report every supported extension through it - GL_OES_EGL_image
+    // specifically was observed missing from it despite actually being
+    // supported. glGetStringi() per-index is the spec-correct way to
+    // query extensions on a core profile; use that instead.
+    bool haveEglImageExt = false;
+    {
+        GLint numExtensions = 0;
+        if (dsa) glGetIntegerv(GL_NUM_EXTENSIONS, &numExtensions);
+        else m_gl41.glGetIntegerv(GL_NUM_EXTENSIONS, &numExtensions);
+        for (GLint i = 0; i < numExtensions && !haveEglImageExt; ++i) {
+            const GLubyte *ext = dsa ? glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i))
+                                     : m_gl41.glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i));
+            if (ext && std::strcmp(reinterpret_cast<const char *>(ext), "GL_OES_EGL_image") == 0) {
+                haveEglImageExt = true;
+            }
+        }
+        if (!haveEglImageExt) {
+            // Fall back to the legacy query too before giving up - belt
+            // and braces, in case some other driver combination has the
+            // opposite problem (populates the legacy string but not the
+            // indexed one).
+            const char *glExtensions = reinterpret_cast<const char *>(
+                dsa ? glGetString(GL_EXTENSIONS) : m_gl41.glGetString(GL_EXTENSIONS));
+            haveEglImageExt = glExtensions &&
+                QByteArray(glExtensions).contains("GL_OES_EGL_image");
+        }
+    }
     if (!haveEglImageExt) {
         qInfo() << "QYuvOpenGLWidget: zero-copy unavailable - GL_OES_EGL_image "
                    "not in this GL context's extension string; staying on the "
@@ -656,7 +680,6 @@ bool QYuvOpenGLWidget::tryInitZeroCopy()
         return false;
     }
 
-    const bool dsa = m_useDsaPath.load(std::memory_order_relaxed);
     if (dsa) {
         glCreateTextures(GL_TEXTURE_2D, 2, m_zeroCopyTextures.data());
     } else {

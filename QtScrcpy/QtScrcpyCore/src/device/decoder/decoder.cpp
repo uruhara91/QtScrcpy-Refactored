@@ -382,8 +382,24 @@ bool Decoder::trySetupZeroCopy(AVFrame *vaapiFrame)
     }
 
     AVBufferRef *rawDrmDeviceCtx = nullptr;
-    int result = av_hwdevice_ctx_create(&rawDrmDeviceCtx, AV_HWDEVICE_TYPE_DRM,
-                                          nullptr, nullptr, 0);
+    // Prefer deriving the DRM device directly from the VAAPI device this
+    // decoder already has open (m_hwDeviceCtx) rather than independently
+    // auto-selecting one - guaranteed to be the exact same physical GPU
+    // VAAPI is decoding on, and sidesteps whatever auto-detection issue
+    // causes av_hwdevice_ctx_create(..., AV_HWDEVICE_TYPE_DRM, nullptr,
+    // ...) to fail outright ("Cannot allocate memory") on at least some
+    // systems (observed on an Intel Tiger Lake iGPU-only laptop).
+    int result = av_hwdevice_ctx_create_derived(&rawDrmDeviceCtx, AV_HWDEVICE_TYPE_DRM,
+                                                  m_hwDeviceCtx.get(), 0);
+    if (result < 0) {
+        char errBuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(result, errBuf, sizeof(errBuf));
+        qInfo("Decoder: could not derive a DRM device from the active VAAPI "
+              "device (%s); trying /dev/dri/renderD128 directly as a "
+              "fallback", errBuf);
+        result = av_hwdevice_ctx_create(&rawDrmDeviceCtx, AV_HWDEVICE_TYPE_DRM,
+                                          "/dev/dri/renderD128", nullptr, 0);
+    }
     if (result < 0) {
         char errBuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(result, errBuf, sizeof(errBuf));

@@ -4,6 +4,7 @@
 
 #include <QDebug>
 #include <QMutexLocker>
+#include <QStringList>
 #include <QtGlobal>
 #include <array>
 #include <utility>
@@ -379,6 +380,30 @@ bool Decoder::trySetupZeroCopy(AVFrame *vaapiFrame)
         qWarning("Decoder: zero-copy setup skipped - decoded frame has no "
                  "hw_frames_ctx");
         return false;
+    }
+
+    // Definitive diagnostic for "is DRM hwdevice support even compiled
+    // into this FFmpeg build at all" - a custom/minimal FFmpeg build
+    // (e.g. one using --disable-everything, --disable-autodetect) can
+    // easily end up without AV_HWDEVICE_TYPE_DRM if the build didn't
+    // explicitly pass --enable-libdrm, since --disable-autodetect means
+    // FFmpeg's configure script won't go looking for libdrm on its own.
+    // If DRM is missing from this list, av_hwdevice_ctx_create() below
+    // fails - but generically, as if it were a plain allocation failure
+    // ("Cannot allocate memory"), which is indistinguishable from an
+    // actual out-of-memory condition without a list like this to compare
+    // against.
+    {
+        QStringList availableTypes;
+        for (AVHWDeviceType t = av_hwdevice_iterate_types(AV_HWDEVICE_TYPE_NONE);
+             t != AV_HWDEVICE_TYPE_NONE;
+             t = av_hwdevice_iterate_types(t)) {
+            availableTypes << QString::fromUtf8(av_hwdevice_get_type_name(t));
+        }
+        qInfo().noquote() << "Decoder: hwdevice types compiled into this FFmpeg build:"
+                          << (availableTypes.isEmpty() ? QStringLiteral("(none)")
+                                                        : availableTypes.join(", "))
+                          << "- zero-copy needs \"drm\" in this list";
     }
 
     AVBufferRef *rawDrmDeviceCtx = nullptr;

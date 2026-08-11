@@ -274,7 +274,23 @@ private:
     bool m_zeroCopyRequested = false;     // QTSCRCPY_EXPERIMENTAL_ZEROCOPY=1 at construction time, and onHwFrame != nullptr
     bool m_zeroCopySetupDone = false;     // trySetupZeroCopy() has run (successfully or not) this session
     bool m_zeroCopyAvailable = false;     // ... and it succeeded
-    bool m_zeroCopySinkDeclined = false;  // the sink returned false once already; stop offering it frames this session
+    // How many *consecutive* times the sink has declined a frame. Not
+    // treated as permanent until it crosses kMaxConsecutiveZeroCopyDeclines
+    // - a real race was observed on real hardware where the decoder's
+    // first hardware frame reaches the sink before its own one-time GL
+    // setup (QYuvOpenGLWidget::initializeGL() -> tryInitZeroCopy()) has
+    // run, which declines that frame for a purely transient reason
+    // ("not ready yet", not "will never work"); giving up permanently on
+    // that first decline meant zero-copy could never activate even once
+    // initialization completed a moment later. Reset to 0 on any accept.
+    int m_zeroCopyConsecutiveDeclines = 0;
+    // Generous - roughly 2s of frames at 60fps. Each attempt still does
+    // real work on this (decoder) side - av_hwframe_map() plus building
+    // the descriptor - even though the sink's own decline check itself
+    // is just an atomic load; falls back to the normal copy-back path
+    // for each declined frame in the meantime, so video keeps playing
+    // throughout this grace period regardless.
+    static constexpr int kMaxConsecutiveZeroCopyDeclines = 120;
     std::atomic_bool m_zeroCopyActive{false}; // at least one frame was actually handed off this session (see zeroCopyActive())
     std::unique_ptr<AVBufferRef, AVBufferRefDeleter> m_drmDeviceCtx;
     std::unique_ptr<AVBufferRef, AVBufferRefDeleter> m_drmFramesCtx;

@@ -332,7 +332,7 @@ void Decoder::resetHwAccelState()
     m_hwTransferFormatProbed = false;
     m_zeroCopySetupDone = false;
     m_zeroCopyAvailable = false;
-    m_zeroCopySinkDeclined = false;
+    m_zeroCopyConsecutiveDeclines = 0;
     m_zeroCopyActive.store(false, std::memory_order_release);
     m_drmFramesCtx.reset();
     m_drmDeviceCtx.reset();
@@ -459,7 +459,10 @@ bool Decoder::trySetupZeroCopy(AVFrame *vaapiFrame)
 
 bool Decoder::trySubmitZeroCopyFrame(AVFrame *vaapiFrame)
 {
-    if (!m_zeroCopyRequested || !m_onHwFrame || m_zeroCopySinkDeclined) return false;
+    if (!m_zeroCopyRequested || !m_onHwFrame ||
+        m_zeroCopyConsecutiveDeclines >= kMaxConsecutiveZeroCopyDeclines) {
+        return false;
+    }
 
     if (!m_zeroCopySetupDone) {
         if (!trySetupZeroCopy(vaapiFrame)) return false;
@@ -478,9 +481,10 @@ bool Decoder::trySubmitZeroCopyFrame(AVFrame *vaapiFrame)
 
     if (av_hwframe_map(mapped, vaapiFrame, AV_HWFRAME_MAP_READ) < 0) {
         // Can genuinely be transient (e.g. a driver hiccup) rather than a
-        // fundamental incompatibility, so this deliberately does NOT set
-        // m_zeroCopySinkDeclined / give up for the rest of the session -
-        // only an explicit decline from the sink itself does that, below.
+        // fundamental incompatibility, so this deliberately does NOT
+        // advance m_zeroCopyConsecutiveDeclines / count toward giving up
+        // for the session - only an explicit decline from the sink
+        // itself does that, below.
         qWarning("Decoder: zero-copy frame mapping failed for this frame; "
                  "using the copy-back path for it instead");
         av_frame_free(&mapped);
@@ -567,6 +571,7 @@ bool Decoder::trySubmitZeroCopyFrame(AVFrame *vaapiFrame)
     });
 
     if (accepted) {
+        m_zeroCopyConsecutiveDeclines = 0;
         m_zeroCopyActive.store(true, std::memory_order_relaxed);
     } else {
         // The sink's contract requires it to have already called
@@ -574,12 +579,19 @@ bool Decoder::trySubmitZeroCopyFrame(AVFrame *vaapiFrame)
         // QtScrcpyCore.h) - so by this point every copy of mappedRef
         // (the one captured above, and this local one once it goes out
         // of scope momentarily) has already dropped to zero references
-        // and the frame is already freed. Nothing left to clean up here;
-        // just stop bothering the sink with further offers this session.
-        m_zeroCopySinkDeclined = true;
-        qInfo("Decoder: zero-copy frame declined by the renderer; "
-              "disabling zero-copy for the rest of this session (falling "
-              "back to the regular hardware copy-back path)");
+        // and the frame is already freed.
+        ++m_zeroCopyConsecutiveDeclines;
+        if (m_zeroCopyConsecutiveDeclines >= kMaxConsecutiveZeroCopyDeclines) {
+            qInfo("Decoder: zero-copy frame declined by the renderer %d times in "
+                  "a row; disabling zero-copy for the rest of this session "
+                  "(falling back to the regular hardware copy-back path)",
+                  m_zeroCopyConsecutiveDeclines);
+        } else {
+            qInfo("Decoder: zero-copy frame declined by the renderer (%d/%d) - "
+                  "retrying with the next frame; falling back to the regular "
+                  "hardware copy-back path for this one",
+                  m_zeroCopyConsecutiveDeclines, kMaxConsecutiveZeroCopyDeclines);
+        }
     }
 
     return accepted;

@@ -572,7 +572,10 @@ bool Decoder::trySubmitZeroCopyFrame(AVFrame *vaapiFrame)
 
     if (accepted) {
         m_zeroCopyConsecutiveDeclines = 0;
-        m_zeroCopyActive.store(true, std::memory_order_relaxed);
+        if (!m_zeroCopyActive.exchange(true, std::memory_order_relaxed)) {
+            qInfo("Decoder: zero-copy frame accepted by the renderer - hardware "
+                  "decode is now rendering with zero CPU copies");
+        }
     } else {
         // The sink's contract requires it to have already called
         // release() synchronously before returning false (see

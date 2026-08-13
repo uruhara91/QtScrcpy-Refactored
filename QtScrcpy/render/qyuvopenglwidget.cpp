@@ -855,6 +855,11 @@ void QYuvOpenGLWidget::importPendingHwFrameLocked()
     m_activeHwFrameRelease = std::move(pending->release);
     m_zeroCopyFrameWidth = pending->width;
     m_zeroCopyFrameHeight = pending->height;
+    if (!m_zeroCopyFrameReady) {
+        qInfo() << "QYuvOpenGLWidget: first zero-copy frame imported and ready to "
+                   "draw (" << pending->width << "x" << pending->height << ") - "
+                   "the GL/EGL import round trip is confirmed working end to end";
+    }
     m_zeroCopyFrameReady = true;
     setFrameSize(QSize(pending->width, pending->height));
 }

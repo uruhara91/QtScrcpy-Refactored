@@ -274,6 +274,12 @@ private:
     bool m_zeroCopyRequested = false;     // QTSCRCPY_EXPERIMENTAL_ZEROCOPY=1 at construction time, and onHwFrame != nullptr
     bool m_zeroCopySetupDone = false;     // trySetupZeroCopy() has run (successfully or not) this session
     bool m_zeroCopyAvailable = false;     // ... and it succeeded
+    // Raw, non-owning - purely an identity check against a later frame's
+    // hw_frames_ctx (see trySubmitZeroCopyFrame()), never dereferenced.
+    // Safe even in the (extremely unlikely) case of a freed context's
+    // address being reused: worst case is a missed re-derivation, not a
+    // dangling-pointer access, since this is only ever compared, not read.
+    AVBufferRef *m_zeroCopySourceFramesCtx = nullptr;
     // How many *consecutive* times the sink has declined a frame. Not
     // treated as permanent until it crosses kMaxConsecutiveZeroCopyDeclines
     // - a real race was observed on real hardware where the decoder's

@@ -333,6 +333,7 @@ void Decoder::resetHwAccelState()
     m_zeroCopySetupDone = false;
     m_zeroCopyAvailable = false;
     m_zeroCopyConsecutiveDeclines = 0;
+    m_zeroCopySourceFramesCtx = nullptr;
     m_zeroCopyActive.store(false, std::memory_order_release);
     m_drmFramesCtx.reset();
     m_drmDeviceCtx.reset();
@@ -450,6 +451,7 @@ bool Decoder::trySetupZeroCopy(AVFrame *vaapiFrame)
         return false;
     }
     m_drmFramesCtx.reset(rawDrmFramesCtx);
+    m_zeroCopySourceFramesCtx = vaapiFrame->hw_frames_ctx;
 
     m_zeroCopyAvailable = true;
     qInfo("Decoder: zero-copy hardware frame export is available "
@@ -462,6 +464,25 @@ bool Decoder::trySubmitZeroCopyFrame(AVFrame *vaapiFrame)
     if (!m_zeroCopyRequested || !m_onHwFrame ||
         m_zeroCopyConsecutiveDeclines >= kMaxConsecutiveZeroCopyDeclines) {
         return false;
+    }
+
+    if (m_zeroCopySetupDone && m_zeroCopyAvailable &&
+        vaapiFrame->hw_frames_ctx != m_zeroCopySourceFramesCtx) {
+        // A resolution change (device rotation, RESIZE_DISPLAY, ...) can
+        // cause avcodec to recreate its internal VAAPI hw_frames_ctx for
+        // the new frame size - the derived DRM frames context
+        // (m_drmFramesCtx) was set up from the *old* one, and there's no
+        // guarantee av_hwframe_map() below still works correctly against
+        // frames from a different pool than the one it was derived from.
+        // Same class of bug as the m_hwTransferFrame rotation-freeze fix
+        // (see audit.md); re-derive rather than risk silently mapping
+        // against a stale/mismatched frames context.
+        qInfo("Decoder: VAAPI hw_frames_ctx changed (likely a resolution "
+              "change) - re-deriving the zero-copy DRM frames context");
+        m_drmFramesCtx.reset();
+        m_drmDeviceCtx.reset();
+        m_zeroCopySetupDone = false;
+        m_zeroCopyAvailable = false;
     }
 
     if (!m_zeroCopySetupDone) {
